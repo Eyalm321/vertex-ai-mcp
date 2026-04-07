@@ -17,10 +17,11 @@ import { deploymentResourcePoolTools } from "./tools/deployment-resource-pools.j
 import { tuningTools } from "./tools/tuning.js";
 import { nasJobTools } from "./tools/nas-jobs.js";
 import { specialistPoolTools } from "./tools/specialist-pools.js";
+import { generativeAiTools } from "./tools/generative-ai.js";
 
 const server = new McpServer({
   name: "vertex-ai-mcp",
-  version: "1.0.0",
+  version: "1.1.0",
 });
 
 const allTools = [
@@ -40,6 +41,7 @@ const allTools = [
   ...tuningTools,
   ...nasJobTools,
   ...specialistPoolTools,
+  ...generativeAiTools,
 ];
 
 for (const tool of allTools) {

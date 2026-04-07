@@ -15,6 +15,7 @@ import { deploymentResourcePoolTools } from "../tools/deployment-resource-pools.
 import { tuningTools } from "../tools/tuning.js";
 import { nasJobTools } from "../tools/nas-jobs.js";
 import { specialistPoolTools } from "../tools/specialist-pools.js";
+import { generativeAiTools } from "../tools/generative-ai.js";
 
 const allTools = [
   ...datasetTools,
@@ -33,6 +34,7 @@ const allTools = [
   ...tuningTools,
   ...nasJobTools,
   ...specialistPoolTools,
+  ...generativeAiTools,
 ];
 
 describe("Tool Registration", () => {
@@ -79,6 +81,7 @@ describe("Tool Registration", () => {
       tuningTools,
       nasJobTools,
       specialistPoolTools,
+      generativeAiTools,
     ];
     for (const mod of modules) {
       expect(Array.isArray(mod)).toBe(true);
