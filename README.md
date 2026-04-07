@@ -1,6 +1,6 @@
 # vertex-ai-mcp
 
-MCP server for **Google Vertex AI** with **196 tools** covering Imagen image generation, Gemini text generation, embeddings, datasets, endpoints, models, indexes, featurestores, pipelines, tensorboards, metadata, and more.
+MCP server for **Google Vertex AI** with **198 tools** covering Imagen image generation, Gemini text generation, embeddings, datasets, endpoints, models, indexes, featurestores, pipelines, tensorboards, metadata, and more.
 
 ## Installation
 
@@ -68,18 +68,22 @@ Or in your MCP config:
 | `GOOGLE_PROJECT_ID` | Yes | - | Your Google Cloud project ID |
 | `GOOGLE_LOCATION` | No | `us-central1` | Vertex AI region |
 
-## Tools (196)
+## Tools (198)
 
-### Generative AI — Imagen, Gemini, Embeddings (15)
+### Generative AI — Imagen, Gemini, Veo, Embeddings (17)
 
-**Model Discovery** (Gemini only — Imagen models are not listed but can be used directly)
-`vertex_list_publisher_models`, `vertex_get_publisher_model`
+**Model Discovery**
+`vertex_list_models_registry` — Built-in registry of all model IDs (Gemini, Imagen, Veo, embeddings, TTS, Lyria). No API call needed, works offline.
+`vertex_list_publisher_models`, `vertex_get_publisher_model` — Live Gemini model listing from Google API (requires service account auth).
 
 **Imagen (Image Generation)**
 `vertex_generate_image`, `vertex_edit_image`, `vertex_upscale_image`
 
 **Gemini (Text Generation)**
 `vertex_generate_content`, `vertex_stream_generate_content`, `vertex_count_tokens`
+
+**Veo (Video Generation)**
+`vertex_generate_video`
 
 **Embeddings**
 `vertex_embed_text`, `vertex_embed_multimodal`

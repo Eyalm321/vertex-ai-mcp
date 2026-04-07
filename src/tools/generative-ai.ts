@@ -1,19 +1,98 @@
 import { z } from "zod";
 import { vertexRequest } from "../client.js";
 
+const MODEL_REGISTRY = {
+  gemini: {
+    description: "Text & multimodal generation (use vertex_generate_content)",
+    models: [
+      { id: "gemini-3-1-pro-preview", stage: "Preview" },
+      { id: "gemini-3-flash-preview", stage: "Preview" },
+      { id: "gemini-3-1-flash-lite-preview", stage: "Preview" },
+      { id: "gemini-3-1-flash-image-preview", stage: "Preview" },
+      { id: "gemini-2-5-pro", stage: "GA" },
+      { id: "gemini-2-5-flash", stage: "GA" },
+      { id: "gemini-2-5-flash-lite", stage: "GA" },
+      { id: "gemini-2-0-flash", stage: "GA" },
+      { id: "gemini-2-0-flash-lite", stage: "GA" },
+    ],
+    note: "Use vertex_list_publisher_models for live Gemini model listing.",
+  },
+  imagen: {
+    description: "Image generation & editing (use vertex_generate_image / vertex_edit_image)",
+    models: [
+      { id: "imagen-4-ultra-generate-001", stage: "GA" },
+      { id: "imagen-4-generate-001", stage: "GA" },
+      { id: "imagen-4-fast-generate-001", stage: "GA" },
+      { id: "imagen-3-generate-002", stage: "GA" },
+      { id: "imagen-3-generate-001", stage: "GA" },
+      { id: "imagen-3-fast-generate-001", stage: "GA" },
+      { id: "imagen-3-capability-001", stage: "GA", note: "Editing/inpainting" },
+    ],
+  },
+  veo: {
+    description: "Video generation (use vertex_generate_video)",
+    models: [
+      { id: "veo-3-1-generate-001", stage: "GA" },
+      { id: "veo-3-1-fast-generate-001", stage: "GA" },
+      { id: "veo-3-generate-001", stage: "GA" },
+      { id: "veo-3-fast-generate-001", stage: "GA" },
+      { id: "veo-2-generate-001", stage: "GA" },
+    ],
+  },
+  embedding: {
+    description: "Text & multimodal embeddings (use vertex_embed_text / vertex_embed_multimodal)",
+    models: [
+      { id: "gemini-embedding-2", stage: "GA" },
+      { id: "text-embedding-005", stage: "GA" },
+      { id: "text-embedding-004", stage: "GA" },
+      { id: "text-multilingual-embedding-002", stage: "GA" },
+      { id: "multimodalembedding@001", stage: "GA" },
+    ],
+  },
+  tts: {
+    description: "Text-to-speech",
+    models: [
+      { id: "gemini-2-5-pro-tts", stage: "GA" },
+      { id: "gemini-2-5-flash-tts", stage: "GA" },
+    ],
+  },
+  lyria: {
+    description: "Music generation",
+    models: [
+      { id: "lyria-2", stage: "GA" },
+      { id: "lyria-3-pro", stage: "Preview" },
+      { id: "lyria-3-clip", stage: "Preview" },
+    ],
+  },
+};
+
 export const generativeAiTools = [
-  // ─── Publisher Models: Discovery ────────────────────────────────
+  // ─── Model Discovery ───────────────────────────────────────────
+  {
+    name: "vertex_list_models_registry",
+    description: "List all known Vertex AI model IDs across all categories: Gemini, Imagen, Veo, embeddings, TTS, and Lyria. Returns a built-in registry of model IDs — no API call needed. Filter by category to see models for a specific task.",
+    inputSchema: z.object({
+      category: z.string().optional().describe("Filter by category: gemini, imagen, veo, embedding, tts, lyria. Omit to list all."),
+    }),
+    handler: async (args: { category?: string }) => {
+      if (args.category) {
+        const cat = args.category.toLowerCase();
+        const entry = MODEL_REGISTRY[cat as keyof typeof MODEL_REGISTRY];
+        if (!entry) return { error: `Unknown category '${args.category}'. Valid: ${Object.keys(MODEL_REGISTRY).join(", ")}` };
+        return { [cat]: entry };
+      }
+      return MODEL_REGISTRY;
+    },
+  },
   {
     name: "vertex_list_publisher_models",
-    description: "List available Gemini publisher models from Google. Returns model names, stages (GA/Preview/Experimental), and versions. Note: only returns Gemini models — Imagen and embedding models are not listed but can be used directly via vertex_generate_image and vertex_embed_text. Requires service account auth (GOOGLE_APPLICATION_CREDENTIALS).",
+    description: "List available Gemini models from Google's live API. Returns real-time model names and stages. Only returns Gemini models — for Imagen, Veo, embeddings, use vertex_list_models_registry instead. Requires service account auth (GOOGLE_APPLICATION_CREDENTIALS).",
     inputSchema: z.object({
-      filter: z.string().optional().describe("Filter expression (optional). Leave empty to list all available models"),
       pageSize: z.number().optional().describe("Maximum number of models to return"),
       pageToken: z.string().optional().describe("Page token for pagination"),
     }),
-    handler: async (args: { filter?: string; pageSize?: number; pageToken?: string }) => {
+    handler: async (args: { pageSize?: number; pageToken?: string }) => {
       return vertexRequest("GET", "/publishers/google/models", undefined, {
-        filter: args.filter,
         pageSize: args.pageSize,
         pageToken: args.pageToken,
       }, { global: true });
@@ -21,9 +100,9 @@ export const generativeAiTools = [
   },
   {
     name: "vertex_get_publisher_model",
-    description: "Get details of a specific Gemini publisher model including supported features, versions, and stage. Note: only works for Gemini models — Imagen models are not queryable via this endpoint. Requires service account auth (GOOGLE_APPLICATION_CREDENTIALS).",
+    description: "Get live details of a specific Gemini model including supported features and stage. Only works for Gemini models. Requires service account auth (GOOGLE_APPLICATION_CREDENTIALS).",
     inputSchema: z.object({
-      modelId: z.string().describe("The Gemini model ID (e.g. gemini-2.5-pro, gemini-2.5-flash, gemini-2.0-flash-001)"),
+      modelId: z.string().describe("The Gemini model ID (e.g. gemini-2-5-pro, gemini-2-5-flash, gemini-2-0-flash)"),
     }),
     handler: async (args: { modelId: string }) => {
       return vertexRequest("GET", `/publishers/google/models/${args.modelId}`, undefined, undefined, { global: true });
@@ -33,9 +112,9 @@ export const generativeAiTools = [
   // ─── Imagen: Image Generation ───────────────────────────────────
   {
     name: "vertex_generate_image",
-    description: "Generate images from a text prompt using Imagen. Returns base64-encoded images. Models: imagen-4.0-generate-001, imagen-4.0-fast-generate-001, imagen-4.0-ultra-generate-001, imagen-3.0-generate-002, imagen-3.0-fast-generate-001.",
+    description: "Generate images from a text prompt using Imagen. Returns base64-encoded images. Use vertex_list_models_registry(category='imagen') to see all available models.",
     inputSchema: z.object({
-      model: z.string().optional().describe("Imagen model name (default: imagen-3.0-generate-002). Options: imagen-4.0-generate-001, imagen-4.0-fast-generate-001, imagen-4.0-ultra-generate-001, imagen-3.0-generate-002, imagen-3.0-fast-generate-001"),
+      model: z.string().optional().describe("Imagen model name (default: imagen-3-generate-002). Use vertex_list_models_registry for all options"),
       prompt: z.string().describe("Text description of the image to generate"),
       sampleCount: z.number().optional().describe("Number of images to generate (1-4, default 1)"),
       aspectRatio: z.string().optional().describe("Aspect ratio: 1:1, 3:4, 4:3, 9:16, 16:9 (default 1:1)"),
@@ -46,7 +125,7 @@ export const generativeAiTools = [
       personGeneration: z.string().optional().describe("People generation: allow_all, allow_adult, dont_allow"),
     }),
     handler: async (args: { model?: string; prompt: string; sampleCount?: number; aspectRatio?: string; addWatermark?: boolean; enhancePrompt?: boolean; seed?: number; safetySetting?: string; personGeneration?: string }) => {
-      const model = args.model || "imagen-3.0-generate-002";
+      const model = args.model || "imagen-3-generate-002";
       const parameters: Record<string, unknown> = {};
       if (args.sampleCount !== undefined) parameters.sampleCount = args.sampleCount;
       if (args.aspectRatio !== undefined) parameters.aspectRatio = args.aspectRatio;
@@ -65,7 +144,7 @@ export const generativeAiTools = [
     name: "vertex_edit_image",
     description: "Edit an existing image using Imagen with a text prompt and optional mask for inpainting. Supports object insertion/removal, background replacement, and style transfer.",
     inputSchema: z.object({
-      model: z.string().optional().describe("Imagen model (default: imagen-3.0-capability-001). Use capability models for editing"),
+      model: z.string().optional().describe("Imagen model (default: imagen-3-capability-001). Use capability models for editing"),
       prompt: z.string().describe("Text description of the desired edit"),
       imageBase64: z.string().describe("Base64-encoded source image to edit"),
       maskBase64: z.string().optional().describe("Base64-encoded mask image for inpainting (white=edit area, black=keep)"),
@@ -73,7 +152,7 @@ export const generativeAiTools = [
       safetySetting: z.string().optional().describe("Safety filter threshold"),
     }),
     handler: async (args: { model?: string; prompt: string; imageBase64: string; maskBase64?: string; sampleCount?: number; safetySetting?: string }) => {
-      const model = args.model || "imagen-3.0-capability-001";
+      const model = args.model || "imagen-3-capability-001";
       const instance: Record<string, unknown> = {
         prompt: args.prompt,
         image: { bytesBase64Encoded: args.imageBase64 },
@@ -94,13 +173,13 @@ export const generativeAiTools = [
     name: "vertex_upscale_image",
     description: "Upscale an image to higher resolution using Imagen.",
     inputSchema: z.object({
-      model: z.string().optional().describe("Imagen model for upscaling (default: imagen-3.0-generate-002)"),
+      model: z.string().optional().describe("Imagen model for upscaling (default: imagen-3-generate-002)"),
       imageBase64: z.string().describe("Base64-encoded image to upscale"),
       upscaleFactor: z.string().optional().describe("Upscale factor: x2 or x4"),
       sampleCount: z.number().optional().describe("Number of upscaled variants (1-4)"),
     }),
     handler: async (args: { model?: string; imageBase64: string; upscaleFactor?: string; sampleCount?: number }) => {
-      const model = args.model || "imagen-3.0-generate-002";
+      const model = args.model || "imagen-3-generate-002";
       const parameters: Record<string, unknown> = { mode: "upscale" };
       if (args.upscaleFactor !== undefined) parameters.upscaleFactor = args.upscaleFactor;
       if (args.sampleCount !== undefined) parameters.sampleCount = args.sampleCount;
@@ -116,7 +195,7 @@ export const generativeAiTools = [
     name: "vertex_generate_content",
     description: "Generate text content using Gemini models via Vertex AI. Supports text, multimodal (image+text), and structured output. Models: gemini-2.5-flash, gemini-2.5-pro, gemini-2.0-flash, etc.",
     inputSchema: z.object({
-      model: z.string().optional().describe("Gemini model name (default: gemini-2.0-flash-001). Options: gemini-2.5-flash-preview-05-20, gemini-2.5-pro-preview-05-06, gemini-2.0-flash-001"),
+      model: z.string().optional().describe("Gemini model name (default: gemini-2-0-flash). Options: gemini-2.5-flash-preview-05-20, gemini-2.5-pro-preview-05-06, gemini-2-0-flash"),
       contents: z.array(z.record(z.string(), z.unknown())).describe("Array of content objects with role (user/model) and parts (array of {text} or {inlineData: {mimeType, data}})"),
       systemInstruction: z.string().optional().describe("System instruction text to guide the model behavior"),
       temperature: z.number().optional().describe("Sampling temperature (0.0-2.0, default 1.0)"),
@@ -127,7 +206,7 @@ export const generativeAiTools = [
       stopSequences: z.array(z.string()).optional().describe("Sequences that stop generation"),
     }),
     handler: async (args: { model?: string; contents: Record<string, unknown>[]; systemInstruction?: string; temperature?: number; maxOutputTokens?: number; topP?: number; topK?: number; responseMimeType?: string; stopSequences?: string[] }) => {
-      const model = args.model || "gemini-2.0-flash-001";
+      const model = args.model || "gemini-2-0-flash";
       const body: Record<string, unknown> = { contents: args.contents };
       if (args.systemInstruction) {
         body.systemInstruction = { parts: [{ text: args.systemInstruction }] };
@@ -149,14 +228,14 @@ export const generativeAiTools = [
     name: "vertex_stream_generate_content",
     description: "Generate text content with streaming using Gemini models via Vertex AI.",
     inputSchema: z.object({
-      model: z.string().optional().describe("Gemini model name (default: gemini-2.0-flash-001)"),
+      model: z.string().optional().describe("Gemini model name (default: gemini-2-0-flash)"),
       contents: z.array(z.record(z.string(), z.unknown())).describe("Array of content objects with role and parts"),
       systemInstruction: z.string().optional().describe("System instruction text"),
       temperature: z.number().optional().describe("Sampling temperature (0.0-2.0)"),
       maxOutputTokens: z.number().optional().describe("Maximum tokens to generate"),
     }),
     handler: async (args: { model?: string; contents: Record<string, unknown>[]; systemInstruction?: string; temperature?: number; maxOutputTokens?: number }) => {
-      const model = args.model || "gemini-2.0-flash-001";
+      const model = args.model || "gemini-2-0-flash";
       const body: Record<string, unknown> = { contents: args.contents };
       if (args.systemInstruction) {
         body.systemInstruction = { parts: [{ text: args.systemInstruction }] };
@@ -174,11 +253,11 @@ export const generativeAiTools = [
     name: "vertex_count_tokens",
     description: "Count the number of tokens in a prompt before sending it to a Gemini model.",
     inputSchema: z.object({
-      model: z.string().optional().describe("Gemini model name (default: gemini-2.0-flash-001)"),
+      model: z.string().optional().describe("Gemini model name (default: gemini-2-0-flash)"),
       contents: z.array(z.record(z.string(), z.unknown())).describe("Array of content objects to count tokens for"),
     }),
     handler: async (args: { model?: string; contents: Record<string, unknown>[] }) => {
-      const model = args.model || "gemini-2.0-flash-001";
+      const model = args.model || "gemini-2-0-flash";
       return vertexRequest("POST", `/publishers/google/models/${model}:countTokens`, {
         contents: args.contents,
       });
@@ -243,12 +322,46 @@ export const generativeAiTools = [
     },
   },
 
+  // ─── Veo: Video Generation ───────────────────────────────────────
+  {
+    name: "vertex_generate_video",
+    description: "Generate a video from a text prompt using Veo models. Returns a long-running operation — use vertex_get_operation to poll for completion, then the result contains a GCS URI to the generated video.",
+    inputSchema: z.object({
+      model: z.string().optional().describe("Veo model (default: veo-2-generate-001). Use vertex_list_models_registry(category='veo') for all options"),
+      prompt: z.string().describe("Text description of the video to generate"),
+      imageBase64: z.string().optional().describe("Base64-encoded image to use as the first frame (image-to-video)"),
+      imageMimeType: z.string().optional().describe("MIME type of the input image (e.g. image/png)"),
+      aspectRatio: z.string().optional().describe("Aspect ratio: 16:9 or 9:16 (default 16:9)"),
+      durationSeconds: z.number().optional().describe("Video duration in seconds (5 or 8, default 5)"),
+      sampleCount: z.number().optional().describe("Number of videos to generate (1-4)"),
+      seed: z.number().optional().describe("Seed for deterministic output"),
+      storageUri: z.string().optional().describe("GCS URI where generated video will be stored (e.g. gs://bucket/output/)"),
+    }),
+    handler: async (args: { model?: string; prompt: string; imageBase64?: string; imageMimeType?: string; aspectRatio?: string; durationSeconds?: number; sampleCount?: number; seed?: number; storageUri?: string }) => {
+      const model = args.model || "veo-2-generate-001";
+      const instance: Record<string, unknown> = { prompt: args.prompt };
+      if (args.imageBase64) {
+        instance.image = { bytesBase64Encoded: args.imageBase64, mimeType: args.imageMimeType || "image/png" };
+      }
+      const parameters: Record<string, unknown> = {};
+      if (args.aspectRatio !== undefined) parameters.aspectRatio = args.aspectRatio;
+      if (args.durationSeconds !== undefined) parameters.durationSeconds = args.durationSeconds;
+      if (args.sampleCount !== undefined) parameters.sampleCount = args.sampleCount;
+      if (args.seed !== undefined) parameters.seed = args.seed;
+      if (args.storageUri !== undefined) parameters.storageUri = args.storageUri;
+      return vertexRequest("POST", `/publishers/google/models/${model}:predict`, {
+        instances: [instance],
+        ...(Object.keys(parameters).length > 0 && { parameters }),
+      });
+    },
+  },
+
   // ─── Cached Content ─────────────────────────────────────────────
   {
     name: "vertex_create_cached_content",
     description: "Create cached content for Gemini to reuse across multiple requests, reducing latency and cost for large contexts.",
     inputSchema: z.object({
-      model: z.string().describe("Full model resource path (e.g. publishers/google/models/gemini-2.0-flash-001)"),
+      model: z.string().describe("Full model resource path (e.g. publishers/google/models/gemini-2-0-flash)"),
       contents: z.array(z.record(z.string(), z.unknown())).describe("Content to cache"),
       systemInstruction: z.string().optional().describe("System instruction to cache"),
       ttl: z.string().optional().describe("Time-to-live duration (e.g. 3600s for 1 hour)"),
