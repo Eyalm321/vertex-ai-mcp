@@ -21,7 +21,7 @@ import { generativeAiTools } from "./tools/generative-ai.js";
 
 const server = new McpServer({
   name: "vertex-ai-mcp",
-  version: "1.5.0",
+  version: "1.5.1",
 });
 
 const allTools = [

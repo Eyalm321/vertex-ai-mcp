@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { readFile } from "fs/promises";
-import { extname } from "path";
+import { readFile, access } from "fs/promises";
+import { extname, resolve, normalize } from "path";
 import { vertexRequest } from "../client.js";
 
 const MIME_TYPES: Record<string, string> = {
@@ -23,13 +23,48 @@ const MIME_TYPES: Record<string, string> = {
   ".ogg": "audio/ogg",
 };
 
+const ALLOWED_EXTENSIONS = new Set(Object.keys(MIME_TYPES));
+
+const BLOCKED_PATHS = [
+  "/.ssh", "\\.ssh",
+  "/.gnupg", "\\.gnupg",
+  "/.aws", "\\.aws",
+  "/.config", "\\.config",
+  "/etc/shadow", "/etc/passwd", "/etc/hosts",
+  "/.env",
+];
+
+function validateFilePath(filePath: string): string {
+  const resolved = resolve(filePath);
+  const normalized = normalize(resolved).replace(/\\/g, "/").toLowerCase();
+
+  for (const blocked of BLOCKED_PATHS) {
+    if (normalized.includes(blocked.toLowerCase())) {
+      throw new Error(`Access denied: reading from '${blocked}' paths is not allowed for security reasons`);
+    }
+  }
+
+  const ext = extname(resolved).toLowerCase();
+  if (!ALLOWED_EXTENSIONS.has(ext)) {
+    throw new Error(`Unsupported file extension '${ext}'. Allowed: ${[...ALLOWED_EXTENSIONS].join(", ")}`);
+  }
+
+  return resolved;
+}
+
 function getMimeType(filePath: string): string {
   const ext = extname(filePath).toLowerCase();
   return MIME_TYPES[ext] || "application/octet-stream";
 }
 
 async function readFileAsBase64(filePath: string): Promise<string> {
-  const buffer = await readFile(filePath);
+  const validated = validateFilePath(filePath);
+  try {
+    await access(validated);
+  } catch {
+    throw new Error(`File not found: ${validated}`);
+  }
+  const buffer = await readFile(validated);
   return buffer.toString("base64");
 }
 
