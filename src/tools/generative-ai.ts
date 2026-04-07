@@ -147,34 +147,108 @@ export const generativeAiTools = [
   },
   {
     name: "vertex_edit_image",
-    description: "Edit an existing image using Imagen with a text prompt and optional mask for inpainting. Supports object insertion/removal, background replacement, and style transfer. Accepts either a file path or base64 data for the image and mask.",
+    description: "Edit an existing image using Imagen with a text prompt. Supports mask-free editing (EDIT_MODE_DEFAULT), inpainting (EDIT_MODE_INPAINT_INSERTION/REMOVAL), background swap (EDIT_MODE_BGSWAP), outpainting (EDIT_MODE_OUTPAINT), style transfer (EDIT_MODE_STYLE), and more. For imagen-3.0-capability-001, uses the referenceImages API format. For older models (imagegeneration@006), uses the legacy image field format. Accepts file paths or base64 data.",
     inputSchema: z.object({
-      model: z.string().describe("Imagen model for editing. Call vertex_list_publisher_models to discover available models."),
+      model: z.string().describe("Imagen model for editing (e.g. imagen-3.0-capability-001). Call vertex_list_publisher_models to discover available models."),
       prompt: z.string().describe("Text description of the desired edit"),
-      imagePath: z.string().optional().describe("Local file path to the source image (e.g. /path/to/photo.png). Use this OR imageBase64."),
+      imagePath: z.string().optional().describe("Local file path to the source image. Use this OR imageBase64."),
       imageBase64: z.string().optional().describe("Base64-encoded source image. Use this OR imagePath."),
-      maskPath: z.string().optional().describe("Local file path to the mask image (white=edit area, black=keep). Use this OR maskBase64."),
+      editMode: z.string().optional().describe("Edit mode: EDIT_MODE_DEFAULT (mask-free), EDIT_MODE_INPAINT_INSERTION, EDIT_MODE_INPAINT_REMOVAL, EDIT_MODE_OUTPAINT, EDIT_MODE_BGSWAP, EDIT_MODE_STYLE, EDIT_MODE_CONTROLLED_EDITING, EDIT_MODE_PRODUCT_IMAGE. Default: EDIT_MODE_DEFAULT."),
+      maskPath: z.string().optional().describe("Local file path to the mask image (for inpaint/outpaint modes). Use this OR maskBase64."),
       maskBase64: z.string().optional().describe("Base64-encoded mask image. Use this OR maskPath."),
+      maskMode: z.string().optional().describe("Mask mode: MASK_MODE_USER_PROVIDED, MASK_MODE_BACKGROUND, MASK_MODE_FOREGROUND, MASK_MODE_SEMANTIC. Only for inpaint/outpaint modes."),
+      maskDilation: z.number().optional().describe("Mask dilation factor (0.0-1.0). Expands mask edges."),
+      maskClasses: z.array(z.number()).optional().describe("Semantic segmentation class IDs (for MASK_MODE_SEMANTIC)"),
+      stylePath: z.string().optional().describe("Local file path to a style reference image. Use this OR styleBase64."),
+      styleBase64: z.string().optional().describe("Base64-encoded style reference image. Use this OR stylePath."),
+      subjectPath: z.string().optional().describe("Local file path to a subject reference image. Use this OR subjectBase64."),
+      subjectBase64: z.string().optional().describe("Base64-encoded subject reference image. Use this OR subjectPath."),
+      baseSteps: z.number().optional().describe("Number of diffusion steps (higher = better quality but slower, default 35)"),
       sampleCount: z.number().optional().describe("Number of edited images to generate (1-4)"),
       safetySetting: z.string().optional().describe("Safety filter threshold"),
     }),
-    handler: async (args: { model: string; prompt: string; imagePath?: string; imageBase64?: string; maskPath?: string; maskBase64?: string; sampleCount?: number; safetySetting?: string }) => {
+    handler: async (args: {
+      model: string; prompt: string; imagePath?: string; imageBase64?: string;
+      editMode?: string; maskPath?: string; maskBase64?: string; maskMode?: string;
+      maskDilation?: number; maskClasses?: number[];
+      stylePath?: string; styleBase64?: string;
+      subjectPath?: string; subjectBase64?: string;
+      baseSteps?: number; sampleCount?: number; safetySetting?: string;
+    }) => {
       const imageData = await resolveBase64(args.imageBase64, args.imagePath);
-      const instance: Record<string, unknown> = {
-        prompt: args.prompt,
-        image: { bytesBase64Encoded: imageData },
-      };
-      if (args.maskBase64 || args.maskPath) {
-        const maskData = await resolveBase64(args.maskBase64, args.maskPath);
-        instance.mask = { bytesBase64Encoded: maskData };
+      const isCapabilityModel = args.model.includes("capability");
+
+      if (isCapabilityModel) {
+        // Imagen 3 capability model uses referenceImages format
+        const referenceImages: Record<string, unknown>[] = [
+          {
+            referenceType: "REFERENCE_TYPE_RAW",
+            referenceId: 1,
+            referenceImage: { bytesBase64Encoded: imageData },
+          },
+        ];
+        let refId = 2;
+        if (args.maskBase64 || args.maskPath) {
+          const maskData = await resolveBase64(args.maskBase64, args.maskPath);
+          const maskRef: Record<string, unknown> = {
+            referenceType: "REFERENCE_TYPE_MASK",
+            referenceId: refId++,
+            referenceImage: { bytesBase64Encoded: maskData },
+          };
+          const maskConfig: Record<string, unknown> = {};
+          if (args.maskMode) maskConfig.maskMode = args.maskMode;
+          else maskConfig.maskMode = "MASK_MODE_USER_PROVIDED";
+          if (args.maskDilation !== undefined) maskConfig.dilation = args.maskDilation;
+          if (args.maskClasses) maskConfig.maskClasses = args.maskClasses;
+          maskRef.maskImageConfig = maskConfig;
+          referenceImages.push(maskRef);
+        }
+        if (args.styleBase64 || args.stylePath) {
+          const styleData = await resolveBase64(args.styleBase64, args.stylePath);
+          referenceImages.push({
+            referenceType: "REFERENCE_TYPE_STYLE",
+            referenceId: refId++,
+            referenceImage: { bytesBase64Encoded: styleData },
+          });
+        }
+        if (args.subjectBase64 || args.subjectPath) {
+          const subjectData = await resolveBase64(args.subjectBase64, args.subjectPath);
+          referenceImages.push({
+            referenceType: "REFERENCE_TYPE_SUBJECT",
+            referenceId: refId++,
+            referenceImage: { bytesBase64Encoded: subjectData },
+          });
+        }
+        const parameters: Record<string, unknown> = {
+          editMode: args.editMode || "EDIT_MODE_DEFAULT",
+        };
+        if (args.baseSteps !== undefined || !args.baseSteps) {
+          parameters.editConfig = { baseSteps: args.baseSteps || 35 };
+        }
+        if (args.sampleCount !== undefined) parameters.sampleCount = args.sampleCount;
+        if (args.safetySetting !== undefined) parameters.safetySetting = args.safetySetting;
+        return vertexRequest("POST", `/publishers/google/models/${args.model}:predict`, {
+          instances: [{ prompt: args.prompt, referenceImages }],
+          parameters,
+        });
+      } else {
+        // Legacy format for older models (imagegeneration@006, etc.)
+        const instance: Record<string, unknown> = {
+          prompt: args.prompt,
+          image: { bytesBase64Encoded: imageData },
+        };
+        if (args.maskBase64 || args.maskPath) {
+          const maskData = await resolveBase64(args.maskBase64, args.maskPath);
+          instance.mask = { bytesBase64Encoded: maskData };
+        }
+        const parameters: Record<string, unknown> = {};
+        if (args.sampleCount !== undefined) parameters.sampleCount = args.sampleCount;
+        if (args.safetySetting !== undefined) parameters.safetySetting = args.safetySetting;
+        return vertexRequest("POST", `/publishers/google/models/${args.model}:predict`, {
+          instances: [instance],
+          parameters,
+        });
       }
-      const parameters: Record<string, unknown> = {};
-      if (args.sampleCount !== undefined) parameters.sampleCount = args.sampleCount;
-      if (args.safetySetting !== undefined) parameters.safetySetting = args.safetySetting;
-      return vertexRequest("POST", `/publishers/google/models/${args.model}:predict`, {
-        instances: [instance],
-        parameters,
-      });
     },
   },
   {
