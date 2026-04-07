@@ -11,10 +11,17 @@ export const generativeAiTools = [
       pageToken: z.string().optional().describe("Page token for pagination"),
     }),
     handler: async (args: { pageSize?: number; pageToken?: string }) => {
-      return vertexRequest("GET", "/publishers/google/models", undefined, {
+      const raw = await vertexRequest<{ publisherModels?: Array<{ name?: string; launchStage?: string }>; nextPageToken?: string }>("GET", "/publishers/google/models", undefined, {
         pageSize: args.pageSize,
         pageToken: args.pageToken,
       }, { apiVersion: "v1beta1", noProjectPath: true });
+      return {
+        models: (raw.publisherModels || []).map((m) => ({
+          id: (m.name || "").replace("publishers/google/models/", ""),
+          stage: m.launchStage || "unknown",
+        })),
+        nextPageToken: raw.nextPageToken,
+      };
     },
   },
   {
@@ -24,7 +31,14 @@ export const generativeAiTools = [
       modelId: z.string().describe("The model ID (e.g. gemini-2-5-pro, imagen-3-generate-002, veo-2-generate-001, text-embedding-005)"),
     }),
     handler: async (args: { modelId: string }) => {
-      return vertexRequest("GET", `/publishers/google/models/${args.modelId}`, undefined, undefined, { apiVersion: "v1beta1", noProjectPath: true });
+      const raw = await vertexRequest<{ name?: string; versionId?: string; launchStage?: string; openSourceCategory?: string; publisherModelTemplate?: string }>("GET", `/publishers/google/models/${args.modelId}`, undefined, undefined, { apiVersion: "v1beta1", noProjectPath: true });
+      return {
+        id: (raw.name || "").replace("publishers/google/models/", ""),
+        versionId: raw.versionId,
+        stage: raw.launchStage || "unknown",
+        openSourceCategory: raw.openSourceCategory,
+        template: raw.publisherModelTemplate,
+      };
     },
   },
 
