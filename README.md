@@ -29,19 +29,37 @@ npm install -g vertex-ai-mcp
 
 ## Authentication
 
-This server uses **Google Application Default Credentials (ADC)**. Set up authentication using one of:
+**Recommended: Service account key file** (required for all features including model discovery):
 
-1. **gcloud CLI** (recommended for local development):
-   ```bash
-   gcloud auth application-default login
-   ```
+1. Go to **GCP Console → IAM → Service Accounts**
+2. Create a service account with the **Vertex AI User** role
+3. Download the JSON key file
+4. Set the env var:
 
-2. **Service account key file**:
-   ```bash
-   export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account-key.json"
-   ```
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account-key.json"
+```
 
-3. **Automatic** on GCE, Cloud Run, GKE (metadata server).
+Or in your MCP config:
+
+```json
+{
+  "mcpServers": {
+    "vertex-ai": {
+      "command": "npx",
+      "args": ["-y", "vertex-ai-mcp"],
+      "env": {
+        "GOOGLE_PROJECT_ID": "your-project-id",
+        "GOOGLE_APPLICATION_CREDENTIALS": "/path/to/service-account-key.json"
+      }
+    }
+  }
+}
+```
+
+**Alternative methods** (work for project-scoped endpoints but NOT model discovery):
+- `gcloud auth application-default login` — works for most tools but not `vertex_list_publisher_models` / `vertex_get_publisher_model`
+- **Automatic** on GCE, Cloud Run, GKE (metadata server)
 
 ## Environment Variables
 
@@ -54,7 +72,7 @@ This server uses **Google Application Default Credentials (ADC)**. Set up authen
 
 ### Generative AI — Imagen, Gemini, Embeddings (15)
 
-**Model Discovery**
+**Model Discovery** (Gemini only — Imagen models are not listed but can be used directly)
 `vertex_list_publisher_models`, `vertex_get_publisher_model`
 
 **Imagen (Image Generation)**

@@ -5,9 +5,9 @@ export const generativeAiTools = [
   // ─── Publisher Models: Discovery ────────────────────────────────
   {
     name: "vertex_list_publisher_models",
-    description: "List available foundation/publisher models from Google (Gemini, Imagen, embeddings, etc.). Filter by type to find models for a specific task.",
+    description: "List available Gemini publisher models from Google. Returns model names, stages (GA/Preview/Experimental), and versions. Note: only returns Gemini models — Imagen and embedding models are not listed but can be used directly via vertex_generate_image and vertex_embed_text. Requires service account auth (GOOGLE_APPLICATION_CREDENTIALS).",
     inputSchema: z.object({
-      filter: z.string().optional().describe("Filter expression. Examples: 'task=GENERATION' for text gen, 'task=IMAGE_GENERATION' for image gen, 'name=gemini*' for Gemini models"),
+      filter: z.string().optional().describe("Filter expression (optional). Leave empty to list all available models"),
       pageSize: z.number().optional().describe("Maximum number of models to return"),
       pageToken: z.string().optional().describe("Page token for pagination"),
     }),
@@ -21,9 +21,9 @@ export const generativeAiTools = [
   },
   {
     name: "vertex_get_publisher_model",
-    description: "Get details of a specific Google publisher/foundation model including supported features, versions, and pricing info. Use this to check model capabilities before calling predict or generateContent.",
+    description: "Get details of a specific Gemini publisher model including supported features, versions, and stage. Note: only works for Gemini models — Imagen models are not queryable via this endpoint. Requires service account auth (GOOGLE_APPLICATION_CREDENTIALS).",
     inputSchema: z.object({
-      modelId: z.string().describe("The model ID (e.g. gemini-2.5-pro, imagen-4.0-generate-001, text-embedding-005)"),
+      modelId: z.string().describe("The Gemini model ID (e.g. gemini-2.5-pro, gemini-2.5-flash, gemini-2.0-flash-001)"),
     }),
     handler: async (args: { modelId: string }) => {
       return vertexRequest("GET", `/publishers/google/models/${args.modelId}`, undefined, undefined, { global: true });
