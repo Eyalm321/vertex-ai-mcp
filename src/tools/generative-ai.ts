@@ -2,6 +2,34 @@ import { z } from "zod";
 import { vertexRequest } from "../client.js";
 
 export const generativeAiTools = [
+  // ─── Publisher Models: Discovery ────────────────────────────────
+  {
+    name: "vertex_list_publisher_models",
+    description: "List available foundation/publisher models from Google (Gemini, Imagen, embeddings, etc.). Filter by type to find models for a specific task.",
+    inputSchema: z.object({
+      filter: z.string().optional().describe("Filter expression. Examples: 'task=GENERATION' for text gen, 'task=IMAGE_GENERATION' for image gen, 'name=gemini*' for Gemini models"),
+      pageSize: z.number().optional().describe("Maximum number of models to return"),
+      pageToken: z.string().optional().describe("Page token for pagination"),
+    }),
+    handler: async (args: { filter?: string; pageSize?: number; pageToken?: string }) => {
+      return vertexRequest("GET", "/publishers/google/models", undefined, {
+        filter: args.filter,
+        pageSize: args.pageSize,
+        pageToken: args.pageToken,
+      });
+    },
+  },
+  {
+    name: "vertex_get_publisher_model",
+    description: "Get details of a specific Google publisher/foundation model including supported features, versions, and pricing info. Use this to check model capabilities before calling predict or generateContent.",
+    inputSchema: z.object({
+      modelId: z.string().describe("The model ID (e.g. gemini-2.5-pro, imagen-4.0-generate-001, text-embedding-005)"),
+    }),
+    handler: async (args: { modelId: string }) => {
+      return vertexRequest("GET", `/publishers/google/models/${args.modelId}`);
+    },
+  },
+
   // ─── Imagen: Image Generation ───────────────────────────────────
   {
     name: "vertex_generate_image",
