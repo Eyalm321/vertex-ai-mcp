@@ -253,21 +253,38 @@ export const generativeAiTools = [
   },
   {
     name: "vertex_upscale_image",
-    description: "Upscale an image to higher resolution using Imagen. Accepts either a file path or base64 data.",
+    description: "Upscale an image to higher resolution using Imagen. Accepts either a file path or base64 data. For newer models (imagen-4.0-upscale-preview), uses the upscaleConfig format.",
     inputSchema: z.object({
-      model: z.string().describe("Imagen model for upscaling. Call vertex_list_publisher_models to discover available models."),
+      model: z.string().describe("Imagen upscale model (e.g. imagen-4.0-upscale-preview). Call vertex_list_publisher_models to discover available models."),
+      prompt: z.string().optional().describe("Prompt describing the image (required for newer upscale models, e.g. 'Upscale the image')"),
       imagePath: z.string().optional().describe("Local file path to the image to upscale. Use this OR imageBase64."),
       imageBase64: z.string().optional().describe("Base64-encoded image to upscale. Use this OR imagePath."),
       upscaleFactor: z.string().optional().describe("Upscale factor: x2 or x4"),
       sampleCount: z.number().optional().describe("Number of upscaled variants (1-4)"),
+      outputMimeType: z.string().optional().describe("Output MIME type: image/png or image/jpeg"),
+      compressionQuality: z.number().optional().describe("JPEG compression quality (0-100, only for image/jpeg)"),
+      storageUri: z.string().optional().describe("GCS URI to store the upscaled image (e.g. gs://bucket/output/)"),
     }),
-    handler: async (args: { model: string; imagePath?: string; imageBase64?: string; upscaleFactor?: string; sampleCount?: number }) => {
+    handler: async (args: { model: string; prompt?: string; imagePath?: string; imageBase64?: string; upscaleFactor?: string; sampleCount?: number; outputMimeType?: string; compressionQuality?: number; storageUri?: string }) => {
       const imageData = await resolveBase64(args.imageBase64, args.imagePath);
+      const instance: Record<string, unknown> = {
+        image: { bytesBase64Encoded: imageData },
+      };
+      if (args.prompt) instance.prompt = args.prompt;
       const parameters: Record<string, unknown> = { mode: "upscale" };
-      if (args.upscaleFactor !== undefined) parameters.upscaleFactor = args.upscaleFactor;
+      if (args.upscaleFactor !== undefined) {
+        parameters.upscaleConfig = { upscaleFactor: args.upscaleFactor };
+      }
       if (args.sampleCount !== undefined) parameters.sampleCount = args.sampleCount;
+      if (args.storageUri !== undefined) parameters.storageUri = args.storageUri;
+      if (args.outputMimeType || args.compressionQuality !== undefined) {
+        const outputOptions: Record<string, unknown> = {};
+        if (args.outputMimeType) outputOptions.mimeType = args.outputMimeType;
+        if (args.compressionQuality !== undefined) outputOptions.compressionQuality = args.compressionQuality;
+        parameters.outputOptions = outputOptions;
+      }
       return vertexRequest("POST", `/publishers/google/models/${args.model}:predict`, {
-        instances: [{ image: { bytesBase64Encoded: imageData } }],
+        instances: [instance],
         parameters,
       });
     },
@@ -462,35 +479,44 @@ export const generativeAiTools = [
   // ─── Veo: Video Generation ───────────────────────────────────────
   {
     name: "vertex_generate_video",
-    description: "Generate a video from a text prompt using Veo models. Optionally provide an image as the first frame (image-to-video). Accepts file path for the image. Returns a long-running operation — use vertex_get_operation to poll for completion.",
+    description: "Generate a video from a text prompt using Veo models. Optionally provide an image as the first frame (image-to-video). Accepts file path for the image. Returns a long-running operation — use vertex_get_operation to poll for completion. Requires storageUri (GCS bucket) for output.",
     inputSchema: z.object({
-      model: z.string().describe("Veo model name. Call vertex_list_publisher_models to discover available models."),
+      model: z.string().describe("Veo model name (e.g. veo-3-generate-preview-001). Call vertex_list_publisher_models to discover available models."),
       prompt: z.string().describe("Text description of the video to generate"),
       imagePath: z.string().optional().describe("Local file path to an image to use as the first frame. Use this OR imageBase64."),
       imageBase64: z.string().optional().describe("Base64-encoded image for the first frame. Use this OR imagePath."),
       imageMimeType: z.string().optional().describe("MIME type of the input image (auto-detected from file path if imagePath is used)"),
       aspectRatio: z.string().optional().describe("Aspect ratio: 16:9 or 9:16 (default 16:9)"),
-      durationSeconds: z.number().optional().describe("Video duration in seconds (5 or 8, default 5)"),
+      durationSeconds: z.number().optional().describe("Video duration in seconds (4, 5, 6, or 8, default 5)"),
       sampleCount: z.number().optional().describe("Number of videos to generate (1-4)"),
       seed: z.number().optional().describe("Seed for deterministic output"),
-      storageUri: z.string().optional().describe("GCS URI where generated video will be stored (e.g. gs://bucket/output/)"),
+      negativePrompt: z.string().optional().describe("What to avoid in the generated video"),
+      enhancePrompt: z.boolean().optional().describe("Use LLM-based prompt rewriting for better results (Veo 2 only)"),
+      personGeneration: z.string().optional().describe("People generation: allow_all, allow_adult, dont_allow"),
+      generateAudio: z.boolean().optional().describe("Generate audio for the video (Veo 3+)"),
+      storageUri: z.string().describe("GCS URI where generated video will be stored (e.g. gs://bucket/output/). Required."),
     }),
-    handler: async (args: { model: string; prompt: string; imagePath?: string; imageBase64?: string; imageMimeType?: string; aspectRatio?: string; durationSeconds?: number; sampleCount?: number; seed?: number; storageUri?: string }) => {
+    handler: async (args: { model: string; prompt: string; imagePath?: string; imageBase64?: string; imageMimeType?: string; aspectRatio?: string; durationSeconds?: number; sampleCount?: number; seed?: number; negativePrompt?: string; enhancePrompt?: boolean; personGeneration?: string; generateAudio?: boolean; storageUri: string }) => {
       const instance: Record<string, unknown> = { prompt: args.prompt };
       if (args.imageBase64 || args.imagePath) {
         const imageData = await resolveBase64(args.imageBase64, args.imagePath);
         const mimeType = args.imageMimeType || (args.imagePath ? getMimeType(args.imagePath) : "image/png");
         instance.image = { bytesBase64Encoded: imageData, mimeType };
       }
-      const parameters: Record<string, unknown> = {};
+      const parameters: Record<string, unknown> = {
+        storageUri: args.storageUri,
+      };
       if (args.aspectRatio !== undefined) parameters.aspectRatio = args.aspectRatio;
       if (args.durationSeconds !== undefined) parameters.durationSeconds = args.durationSeconds;
       if (args.sampleCount !== undefined) parameters.sampleCount = args.sampleCount;
       if (args.seed !== undefined) parameters.seed = args.seed;
-      if (args.storageUri !== undefined) parameters.storageUri = args.storageUri;
-      return vertexRequest("POST", `/publishers/google/models/${args.model}:predict`, {
+      if (args.negativePrompt !== undefined) parameters.negativePrompt = args.negativePrompt;
+      if (args.enhancePrompt !== undefined) parameters.enhancePrompt = args.enhancePrompt;
+      if (args.personGeneration !== undefined) parameters.personGeneration = args.personGeneration;
+      if (args.generateAudio !== undefined) parameters.generateAudio = args.generateAudio;
+      return vertexRequest("POST", `/publishers/google/models/${args.model}:predictLongRunning`, {
         instances: [instance],
-        ...(Object.keys(parameters).length > 0 && { parameters }),
+        parameters,
       });
     },
   },
