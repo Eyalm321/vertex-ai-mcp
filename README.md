@@ -1,6 +1,6 @@
 # vertex-ai-mcp
 
-MCP server for **Google Vertex AI** with **198 tools** covering Imagen image generation, Gemini text generation, embeddings, datasets, endpoints, models, indexes, featurestores, pipelines, tensorboards, metadata, and more.
+MCP server for **Google Vertex AI** with **197 tools** covering Imagen image generation, Gemini text generation, embeddings, datasets, endpoints, models, indexes, featurestores, pipelines, tensorboards, metadata, and more.
 
 ## Installation
 
@@ -68,13 +68,12 @@ Or in your MCP config:
 | `GOOGLE_PROJECT_ID` | Yes | - | Your Google Cloud project ID |
 | `GOOGLE_LOCATION` | No | `us-central1` | Vertex AI region |
 
-## Tools (198)
+## Tools (197)
 
-### Generative AI — Imagen, Gemini, Veo, Embeddings (17)
+### Generative AI — Imagen, Gemini, Veo, Embeddings (16)
 
-**Model Discovery**
-`vertex_list_models_registry` — Built-in registry of all model IDs (Gemini, Imagen, Veo, embeddings, TTS, Lyria). No API call needed, works offline.
-`vertex_list_publisher_models`, `vertex_get_publisher_model` — Live Gemini model listing from Google API (requires service account auth).
+**Model Discovery** — Call `vertex_list_publisher_models` first if unsure which model to use. Returns all available models (Gemini, Imagen, Veo, embeddings, TTS, Lyria) from the live API.
+`vertex_list_publisher_models`, `vertex_get_publisher_model`
 
 **Imagen (Image Generation)**
 `vertex_generate_image`, `vertex_edit_image`, `vertex_upscale_image`
