@@ -86,7 +86,7 @@ export const generativeAiTools = [
   },
   {
     name: "vertex_list_publisher_models",
-    description: "List available Gemini models from Google's live API. Returns real-time model names and stages. Only returns Gemini models — for Imagen, Veo, embeddings, use vertex_list_models_registry instead. Requires service account auth (GOOGLE_APPLICATION_CREDENTIALS).",
+    description: "List all available Google publisher models from the live API — includes Gemini, Imagen, Veo, embeddings, TTS, and more. Returns real-time model names and stages (GA/Preview/Experimental). Uses the regional v1beta1 endpoint.",
     inputSchema: z.object({
       pageSize: z.number().optional().describe("Maximum number of models to return"),
       pageToken: z.string().optional().describe("Page token for pagination"),
@@ -95,17 +95,17 @@ export const generativeAiTools = [
       return vertexRequest("GET", "/publishers/google/models", undefined, {
         pageSize: args.pageSize,
         pageToken: args.pageToken,
-      }, { global: true });
+      }, { apiVersion: "v1beta1" });
     },
   },
   {
     name: "vertex_get_publisher_model",
-    description: "Get live details of a specific Gemini model including supported features and stage. Only works for Gemini models. Requires service account auth (GOOGLE_APPLICATION_CREDENTIALS).",
+    description: "Get live details of a specific Google publisher model including supported features, versions, and stage. Works for Gemini, Imagen, Veo, embedding models, etc.",
     inputSchema: z.object({
-      modelId: z.string().describe("The Gemini model ID (e.g. gemini-2-5-pro, gemini-2-5-flash, gemini-2-0-flash)"),
+      modelId: z.string().describe("The model ID (e.g. gemini-2-5-pro, imagen-3-generate-002, veo-2-generate-001, text-embedding-005)"),
     }),
     handler: async (args: { modelId: string }) => {
-      return vertexRequest("GET", `/publishers/google/models/${args.modelId}`, undefined, undefined, { global: true });
+      return vertexRequest("GET", `/publishers/google/models/${args.modelId}`, undefined, undefined, { apiVersion: "v1beta1" });
     },
   },
 
