@@ -1,5 +1,43 @@
 import { z } from "zod";
+import { readFile } from "fs/promises";
+import { extname } from "path";
 import { vertexRequest } from "../client.js";
+
+const MIME_TYPES: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".bmp": "image/bmp",
+  ".tiff": "image/tiff",
+  ".tif": "image/tiff",
+  ".pdf": "application/pdf",
+  ".mp4": "video/mp4",
+  ".avi": "video/x-msvideo",
+  ".mov": "video/quicktime",
+  ".webm": "video/webm",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".flac": "audio/flac",
+  ".ogg": "audio/ogg",
+};
+
+function getMimeType(filePath: string): string {
+  const ext = extname(filePath).toLowerCase();
+  return MIME_TYPES[ext] || "application/octet-stream";
+}
+
+async function readFileAsBase64(filePath: string): Promise<string> {
+  const buffer = await readFile(filePath);
+  return buffer.toString("base64");
+}
+
+async function resolveBase64(base64?: string, filePath?: string): Promise<string> {
+  if (base64) return base64;
+  if (filePath) return readFileAsBase64(filePath);
+  throw new Error("Either base64 data or a file path must be provided");
+}
 
 export const generativeAiTools = [
   // ─── Model Discovery ───────────────────────────────────────────
@@ -74,22 +112,26 @@ export const generativeAiTools = [
   },
   {
     name: "vertex_edit_image",
-    description: "Edit an existing image using Imagen with a text prompt and optional mask for inpainting. Supports object insertion/removal, background replacement, and style transfer. If unsure which model to use, call vertex_list_publisher_models first.",
+    description: "Edit an existing image using Imagen with a text prompt and optional mask for inpainting. Supports object insertion/removal, background replacement, and style transfer. Accepts either a file path or base64 data for the image and mask.",
     inputSchema: z.object({
       model: z.string().describe("Imagen model for editing. Call vertex_list_publisher_models to discover available models."),
       prompt: z.string().describe("Text description of the desired edit"),
-      imageBase64: z.string().describe("Base64-encoded source image to edit"),
-      maskBase64: z.string().optional().describe("Base64-encoded mask image for inpainting (white=edit area, black=keep)"),
+      imagePath: z.string().optional().describe("Local file path to the source image (e.g. /path/to/photo.png). Use this OR imageBase64."),
+      imageBase64: z.string().optional().describe("Base64-encoded source image. Use this OR imagePath."),
+      maskPath: z.string().optional().describe("Local file path to the mask image (white=edit area, black=keep). Use this OR maskBase64."),
+      maskBase64: z.string().optional().describe("Base64-encoded mask image. Use this OR maskPath."),
       sampleCount: z.number().optional().describe("Number of edited images to generate (1-4)"),
       safetySetting: z.string().optional().describe("Safety filter threshold"),
     }),
-    handler: async (args: { model: string; prompt: string; imageBase64: string; maskBase64?: string; sampleCount?: number; safetySetting?: string }) => {
+    handler: async (args: { model: string; prompt: string; imagePath?: string; imageBase64?: string; maskPath?: string; maskBase64?: string; sampleCount?: number; safetySetting?: string }) => {
+      const imageData = await resolveBase64(args.imageBase64, args.imagePath);
       const instance: Record<string, unknown> = {
         prompt: args.prompt,
-        image: { bytesBase64Encoded: args.imageBase64 },
+        image: { bytesBase64Encoded: imageData },
       };
-      if (args.maskBase64) {
-        instance.mask = { bytesBase64Encoded: args.maskBase64 };
+      if (args.maskBase64 || args.maskPath) {
+        const maskData = await resolveBase64(args.maskBase64, args.maskPath);
+        instance.mask = { bytesBase64Encoded: maskData };
       }
       const parameters: Record<string, unknown> = {};
       if (args.sampleCount !== undefined) parameters.sampleCount = args.sampleCount;
@@ -102,19 +144,21 @@ export const generativeAiTools = [
   },
   {
     name: "vertex_upscale_image",
-    description: "Upscale an image to higher resolution using Imagen. If unsure which model to use, call vertex_list_publisher_models first.",
+    description: "Upscale an image to higher resolution using Imagen. Accepts either a file path or base64 data.",
     inputSchema: z.object({
       model: z.string().describe("Imagen model for upscaling. Call vertex_list_publisher_models to discover available models."),
-      imageBase64: z.string().describe("Base64-encoded image to upscale"),
+      imagePath: z.string().optional().describe("Local file path to the image to upscale. Use this OR imageBase64."),
+      imageBase64: z.string().optional().describe("Base64-encoded image to upscale. Use this OR imagePath."),
       upscaleFactor: z.string().optional().describe("Upscale factor: x2 or x4"),
       sampleCount: z.number().optional().describe("Number of upscaled variants (1-4)"),
     }),
-    handler: async (args: { model: string; imageBase64: string; upscaleFactor?: string; sampleCount?: number }) => {
+    handler: async (args: { model: string; imagePath?: string; imageBase64?: string; upscaleFactor?: string; sampleCount?: number }) => {
+      const imageData = await resolveBase64(args.imageBase64, args.imagePath);
       const parameters: Record<string, unknown> = { mode: "upscale" };
       if (args.upscaleFactor !== undefined) parameters.upscaleFactor = args.upscaleFactor;
       if (args.sampleCount !== undefined) parameters.sampleCount = args.sampleCount;
       return vertexRequest("POST", `/publishers/google/models/${args.model}:predict`, {
-        instances: [{ image: { bytesBase64Encoded: args.imageBase64 } }],
+        instances: [{ image: { bytesBase64Encoded: imageData } }],
         parameters,
       });
     },
@@ -123,10 +167,12 @@ export const generativeAiTools = [
   // ─── Gemini: Text Generation ────────────────────────────────────
   {
     name: "vertex_generate_content",
-    description: "Generate text content using Gemini models via Vertex AI. Supports text, multimodal (image+text), and structured output. If unsure which model to use, call vertex_list_publisher_models first to discover available Gemini models.",
+    description: "Generate text content using Gemini models via Vertex AI. Supports text, multimodal (image+text), and structured output. For multimodal input, use filePaths to attach local files (images, PDFs, audio, video) — they are automatically read and converted. If unsure which model to use, call vertex_list_publisher_models first.",
     inputSchema: z.object({
       model: z.string().describe("Gemini model name. Call vertex_list_publisher_models to discover available models."),
-      contents: z.array(z.record(z.string(), z.unknown())).describe("Array of content objects with role (user/model) and parts (array of {text} or {inlineData: {mimeType, data}})"),
+      prompt: z.string().optional().describe("Simple text prompt. Use this for text-only requests instead of building the full contents array."),
+      filePaths: z.array(z.string()).optional().describe("Array of local file paths to attach (images, PDFs, audio, video). Files are read from disk and sent as inline data. Use with prompt for easy multimodal requests."),
+      contents: z.array(z.record(z.string(), z.unknown())).optional().describe("Full contents array with role (user/model) and parts. Use for multi-turn conversations or advanced usage. If prompt/filePaths are provided, they are used instead."),
       systemInstruction: z.string().optional().describe("System instruction text to guide the model behavior"),
       temperature: z.number().optional().describe("Sampling temperature (0.0-2.0, default 1.0)"),
       maxOutputTokens: z.number().optional().describe("Maximum number of tokens to generate"),
@@ -135,8 +181,27 @@ export const generativeAiTools = [
       responseMimeType: z.string().optional().describe("Response format: text/plain or application/json"),
       stopSequences: z.array(z.string()).optional().describe("Sequences that stop generation"),
     }),
-    handler: async (args: { model: string; contents: Record<string, unknown>[]; systemInstruction?: string; temperature?: number; maxOutputTokens?: number; topP?: number; topK?: number; responseMimeType?: string; stopSequences?: string[] }) => {
-      const body: Record<string, unknown> = { contents: args.contents };
+    handler: async (args: { model: string; prompt?: string; filePaths?: string[]; contents?: Record<string, unknown>[]; systemInstruction?: string; temperature?: number; maxOutputTokens?: number; topP?: number; topK?: number; responseMimeType?: string; stopSequences?: string[] }) => {
+      let contents: Record<string, unknown>[];
+      if (args.prompt || args.filePaths) {
+        const parts: Record<string, unknown>[] = [];
+        if (args.prompt) {
+          parts.push({ text: args.prompt });
+        }
+        if (args.filePaths) {
+          for (const fp of args.filePaths) {
+            const data = await readFileAsBase64(fp);
+            const mimeType = getMimeType(fp);
+            parts.push({ inlineData: { mimeType, data } });
+          }
+        }
+        contents = [{ role: "user", parts }];
+      } else if (args.contents) {
+        contents = args.contents;
+      } else {
+        throw new Error("Provide either prompt/filePaths or contents");
+      }
+      const body: Record<string, unknown> = { contents };
       if (args.systemInstruction) {
         body.systemInstruction = { parts: [{ text: args.systemInstruction }] };
       }
@@ -155,16 +220,35 @@ export const generativeAiTools = [
   },
   {
     name: "vertex_stream_generate_content",
-    description: "Generate text content with streaming using Gemini models via Vertex AI. If unsure which model to use, call vertex_list_publisher_models first.",
+    description: "Generate text content with streaming using Gemini models via Vertex AI. Supports file attachments via filePaths. If unsure which model to use, call vertex_list_publisher_models first.",
     inputSchema: z.object({
       model: z.string().describe("Gemini model name. Call vertex_list_publisher_models to discover available models."),
-      contents: z.array(z.record(z.string(), z.unknown())).describe("Array of content objects with role and parts"),
+      prompt: z.string().optional().describe("Simple text prompt. Use this for text-only requests."),
+      filePaths: z.array(z.string()).optional().describe("Array of local file paths to attach (images, PDFs, audio, video)."),
+      contents: z.array(z.record(z.string(), z.unknown())).optional().describe("Full contents array. If prompt/filePaths are provided, they are used instead."),
       systemInstruction: z.string().optional().describe("System instruction text"),
       temperature: z.number().optional().describe("Sampling temperature (0.0-2.0)"),
       maxOutputTokens: z.number().optional().describe("Maximum tokens to generate"),
     }),
-    handler: async (args: { model: string; contents: Record<string, unknown>[]; systemInstruction?: string; temperature?: number; maxOutputTokens?: number }) => {
-      const body: Record<string, unknown> = { contents: args.contents };
+    handler: async (args: { model: string; prompt?: string; filePaths?: string[]; contents?: Record<string, unknown>[]; systemInstruction?: string; temperature?: number; maxOutputTokens?: number }) => {
+      let contents: Record<string, unknown>[];
+      if (args.prompt || args.filePaths) {
+        const parts: Record<string, unknown>[] = [];
+        if (args.prompt) parts.push({ text: args.prompt });
+        if (args.filePaths) {
+          for (const fp of args.filePaths) {
+            const data = await readFileAsBase64(fp);
+            const mimeType = getMimeType(fp);
+            parts.push({ inlineData: { mimeType, data } });
+          }
+        }
+        contents = [{ role: "user", parts }];
+      } else if (args.contents) {
+        contents = args.contents;
+      } else {
+        throw new Error("Provide either prompt/filePaths or contents");
+      }
+      const body: Record<string, unknown> = { contents };
       if (args.systemInstruction) {
         body.systemInstruction = { parts: [{ text: args.systemInstruction }] };
       }
@@ -182,12 +266,29 @@ export const generativeAiTools = [
     description: "Count the number of tokens in a prompt before sending it to a Gemini model.",
     inputSchema: z.object({
       model: z.string().describe("Gemini model name. Call vertex_list_publisher_models to discover available models."),
-      contents: z.array(z.record(z.string(), z.unknown())).describe("Array of content objects to count tokens for"),
+      prompt: z.string().optional().describe("Simple text prompt to count tokens for."),
+      filePaths: z.array(z.string()).optional().describe("Local file paths to include in token count."),
+      contents: z.array(z.record(z.string(), z.unknown())).optional().describe("Full contents array to count tokens for."),
     }),
-    handler: async (args: { model: string; contents: Record<string, unknown>[] }) => {
-      return vertexRequest("POST", `/publishers/google/models/${args.model}:countTokens`, {
-        contents: args.contents,
-      });
+    handler: async (args: { model: string; prompt?: string; filePaths?: string[]; contents?: Record<string, unknown>[] }) => {
+      let contents: Record<string, unknown>[];
+      if (args.prompt || args.filePaths) {
+        const parts: Record<string, unknown>[] = [];
+        if (args.prompt) parts.push({ text: args.prompt });
+        if (args.filePaths) {
+          for (const fp of args.filePaths) {
+            const data = await readFileAsBase64(fp);
+            const mimeType = getMimeType(fp);
+            parts.push({ inlineData: { mimeType, data } });
+          }
+        }
+        contents = [{ role: "user", parts }];
+      } else if (args.contents) {
+        contents = args.contents;
+      } else {
+        throw new Error("Provide either prompt/filePaths or contents");
+      }
+      return vertexRequest("POST", `/publishers/google/models/${args.model}:countTokens`, { contents });
     },
   },
 
@@ -219,21 +320,23 @@ export const generativeAiTools = [
   },
   {
     name: "vertex_embed_multimodal",
-    description: "Generate multimodal embeddings from text, images, or video using Vertex AI. Useful for cross-modal search. If unsure which model to use, call vertex_list_publisher_models first.",
+    description: "Generate multimodal embeddings from text, images, or video using Vertex AI. Useful for cross-modal search. Accepts file paths for images — no need to convert to base64 manually.",
     inputSchema: z.object({
       model: z.string().describe("Multimodal embedding model. Call vertex_list_publisher_models to discover available models."),
       text: z.string().optional().describe("Text to embed"),
-      imageBase64: z.string().optional().describe("Base64-encoded image to embed"),
-      imageMimeType: z.string().optional().describe("Image MIME type (e.g. image/png, image/jpeg)"),
+      imagePath: z.string().optional().describe("Local file path to an image to embed. Use this OR imageBase64."),
+      imageBase64: z.string().optional().describe("Base64-encoded image to embed. Use this OR imagePath."),
+      imageMimeType: z.string().optional().describe("Image MIME type (auto-detected from file path if imagePath is used)"),
       videoUri: z.string().optional().describe("GCS URI of video to embed (gs://bucket/video.mp4)"),
       dimension: z.number().optional().describe("Embedding dimension: 128, 256, 512, or 1408 (default 1408)"),
     }),
-    handler: async (args: { model: string; text?: string; imageBase64?: string; imageMimeType?: string; videoUri?: string; dimension?: number }) => {
+    handler: async (args: { model: string; text?: string; imagePath?: string; imageBase64?: string; imageMimeType?: string; videoUri?: string; dimension?: number }) => {
       const instance: Record<string, unknown> = {};
       if (args.text) instance.text = args.text;
-      if (args.imageBase64) {
-        instance.image = { bytesBase64Encoded: args.imageBase64 };
-        if (args.imageMimeType) (instance.image as Record<string, unknown>).mimeType = args.imageMimeType;
+      if (args.imageBase64 || args.imagePath) {
+        const imageData = await resolveBase64(args.imageBase64, args.imagePath);
+        const mimeType = args.imageMimeType || (args.imagePath ? getMimeType(args.imagePath) : "image/png");
+        instance.image = { bytesBase64Encoded: imageData, mimeType };
       }
       if (args.videoUri) {
         instance.video = { gcsUri: args.videoUri };
@@ -250,22 +353,25 @@ export const generativeAiTools = [
   // ─── Veo: Video Generation ───────────────────────────────────────
   {
     name: "vertex_generate_video",
-    description: "Generate a video from a text prompt using Veo models. Returns a long-running operation — use vertex_get_operation to poll for completion, then the result contains a GCS URI to the generated video. If unsure which model to use, call vertex_list_publisher_models first.",
+    description: "Generate a video from a text prompt using Veo models. Optionally provide an image as the first frame (image-to-video). Accepts file path for the image. Returns a long-running operation — use vertex_get_operation to poll for completion.",
     inputSchema: z.object({
       model: z.string().describe("Veo model name. Call vertex_list_publisher_models to discover available models."),
       prompt: z.string().describe("Text description of the video to generate"),
-      imageBase64: z.string().optional().describe("Base64-encoded image to use as the first frame (image-to-video)"),
-      imageMimeType: z.string().optional().describe("MIME type of the input image (e.g. image/png)"),
+      imagePath: z.string().optional().describe("Local file path to an image to use as the first frame. Use this OR imageBase64."),
+      imageBase64: z.string().optional().describe("Base64-encoded image for the first frame. Use this OR imagePath."),
+      imageMimeType: z.string().optional().describe("MIME type of the input image (auto-detected from file path if imagePath is used)"),
       aspectRatio: z.string().optional().describe("Aspect ratio: 16:9 or 9:16 (default 16:9)"),
       durationSeconds: z.number().optional().describe("Video duration in seconds (5 or 8, default 5)"),
       sampleCount: z.number().optional().describe("Number of videos to generate (1-4)"),
       seed: z.number().optional().describe("Seed for deterministic output"),
       storageUri: z.string().optional().describe("GCS URI where generated video will be stored (e.g. gs://bucket/output/)"),
     }),
-    handler: async (args: { model: string; prompt: string; imageBase64?: string; imageMimeType?: string; aspectRatio?: string; durationSeconds?: number; sampleCount?: number; seed?: number; storageUri?: string }) => {
+    handler: async (args: { model: string; prompt: string; imagePath?: string; imageBase64?: string; imageMimeType?: string; aspectRatio?: string; durationSeconds?: number; sampleCount?: number; seed?: number; storageUri?: string }) => {
       const instance: Record<string, unknown> = { prompt: args.prompt };
-      if (args.imageBase64) {
-        instance.image = { bytesBase64Encoded: args.imageBase64, mimeType: args.imageMimeType || "image/png" };
+      if (args.imageBase64 || args.imagePath) {
+        const imageData = await resolveBase64(args.imageBase64, args.imagePath);
+        const mimeType = args.imageMimeType || (args.imagePath ? getMimeType(args.imagePath) : "image/png");
+        instance.image = { bytesBase64Encoded: imageData, mimeType };
       }
       const parameters: Record<string, unknown> = {};
       if (args.aspectRatio !== undefined) parameters.aspectRatio = args.aspectRatio;

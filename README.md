@@ -90,6 +90,18 @@ Or in your MCP config:
 **Cached Content**
 `vertex_create_cached_content`, `vertex_get_cached_content`, `vertex_list_cached_contents`, `vertex_update_cached_content`, `vertex_delete_cached_content`
 
+#### Local File Support
+
+Generative AI tools accept **local file paths** as an alternative to base64-encoded data:
+
+- `vertex_generate_content` / `vertex_stream_generate_content` / `vertex_count_tokens` — pass a `prompt` string and `filePaths` array instead of building the full `contents` array
+- `vertex_edit_image` — pass `imagePath` / `maskPath` instead of base64
+- `vertex_upscale_image` — pass `imagePath` instead of base64
+- `vertex_embed_multimodal` — pass `imagePath` instead of base64
+- `vertex_generate_video` — pass `imagePath` instead of base64
+
+Supported formats: PNG, JPEG, GIF, WebP, BMP, TIFF, PDF, MP4, MOV, AVI, MKV, WebM, MP3, WAV, FLAC, OGG, AAC, TXT, HTML, CSS, JS, JSON, CSV, XML.
+
 ### Datasets (8)
 `vertex_create_dataset`, `vertex_get_dataset`, `vertex_list_datasets`, `vertex_delete_dataset`, `vertex_update_dataset`, `vertex_import_data`, `vertex_export_data`, `vertex_search_data_items`
 
