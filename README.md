@@ -1,6 +1,6 @@
 # vertex-ai-mcp
 
-MCP server for **Google Vertex AI** with **181 tools** covering datasets, endpoints, models, indexes, featurestores, pipelines, tensorboards, metadata, and more.
+MCP server for **Google Vertex AI** with **194 tools** covering Imagen image generation, Gemini text generation, embeddings, datasets, endpoints, models, indexes, featurestores, pipelines, tensorboards, metadata, and more.
 
 ## Installation
 
@@ -50,7 +50,21 @@ This server uses **Google Application Default Credentials (ADC)**. Set up authen
 | `GOOGLE_PROJECT_ID` | Yes | - | Your Google Cloud project ID |
 | `GOOGLE_LOCATION` | No | `us-central1` | Vertex AI region |
 
-## Tools (181)
+## Tools (194)
+
+### Generative AI — Imagen, Gemini, Embeddings (13)
+
+**Imagen (Image Generation)**
+`vertex_generate_image`, `vertex_edit_image`, `vertex_upscale_image`
+
+**Gemini (Text Generation)**
+`vertex_generate_content`, `vertex_stream_generate_content`, `vertex_count_tokens`
+
+**Embeddings**
+`vertex_embed_text`, `vertex_embed_multimodal`
+
+**Cached Content**
+`vertex_create_cached_content`, `vertex_get_cached_content`, `vertex_list_cached_contents`, `vertex_update_cached_content`, `vertex_delete_cached_content`
 
 ### Datasets (8)
 `vertex_create_dataset`, `vertex_get_dataset`, `vertex_list_datasets`, `vertex_delete_dataset`, `vertex_update_dataset`, `vertex_import_data`, `vertex_export_data`, `vertex_search_data_items`
