@@ -16,7 +16,7 @@ export const generativeAiTools = [
         filter: args.filter,
         pageSize: args.pageSize,
         pageToken: args.pageToken,
-      });
+      }, { global: true });
     },
   },
   {
@@ -26,7 +26,7 @@ export const generativeAiTools = [
       modelId: z.string().describe("The model ID (e.g. gemini-2.5-pro, imagen-4.0-generate-001, text-embedding-005)"),
     }),
     handler: async (args: { modelId: string }) => {
-      return vertexRequest("GET", `/publishers/google/models/${args.modelId}`);
+      return vertexRequest("GET", `/publishers/google/models/${args.modelId}`, undefined, undefined, { global: true });
     },
   },
 

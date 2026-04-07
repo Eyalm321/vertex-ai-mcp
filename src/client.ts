@@ -31,9 +31,19 @@ export async function vertexRequest<T>(
   method: string,
   path: string,
   body?: Record<string, unknown>,
-  params?: Record<string, string | number | boolean | undefined>
+  params?: Record<string, string | number | boolean | undefined>,
+  options?: { apiVersion?: string; global?: boolean }
 ): Promise<T> {
-  const baseUrl = getBaseUrl();
+  let baseUrl: string;
+  if (options?.global) {
+    const version = options?.apiVersion || "v1beta1";
+    baseUrl = `https://aiplatform.googleapis.com/${version}`;
+  } else {
+    const location = getLocation();
+    const projectId = getProjectId();
+    const version = options?.apiVersion || "v1";
+    baseUrl = `https://${location}-aiplatform.googleapis.com/${version}/projects/${projectId}/locations/${location}`;
+  }
   const url = new URL(`${baseUrl}${path}`);
 
   if (params) {
@@ -58,13 +68,13 @@ export async function vertexRequest<T>(
     "Content-Type": "application/json",
   };
 
-  const options: RequestInit = {
+  const fetchOptions: RequestInit = {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
   };
 
-  const res = await fetch(url.toString(), options);
+  const res = await fetch(url.toString(), fetchOptions);
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
