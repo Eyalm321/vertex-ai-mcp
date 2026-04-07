@@ -1,0 +1,55 @@
+{
+  "name": "@eyalm321/vertex-ai-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for Google Vertex AI — 180+ tools covering datasets, endpoints, models, indexes, featurestores, pipelines, tensorboards, and more",
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "main": "dist/index.js",
+  "bin": {
+    "vertex-ai-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist/**/*",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "vertex-ai",
+    "google-cloud",
+    "machine-learning",
+    "claude",
+    "model-context-protocol",
+    "ai-platform",
+    "mlops"
+  ],
+  "author": "Eyalm321",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Eyalm321/vertex-ai-mcp.git"
+  },
+  "homepage": "https://github.com/Eyalm321/vertex-ai-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/Eyalm321/vertex-ai-mcp/issues"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "google-auth-library": "^9.15.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.0"
+  }
+}
