@@ -14,7 +14,7 @@ export const generativeAiTools = [
       return vertexRequest("GET", "/publishers/google/models", undefined, {
         pageSize: args.pageSize,
         pageToken: args.pageToken,
-      }, { apiVersion: "v1beta1" });
+      }, { apiVersion: "v1beta1", noProjectPath: true });
     },
   },
   {
@@ -24,7 +24,7 @@ export const generativeAiTools = [
       modelId: z.string().describe("The model ID (e.g. gemini-2-5-pro, imagen-3-generate-002, veo-2-generate-001, text-embedding-005)"),
     }),
     handler: async (args: { modelId: string }) => {
-      return vertexRequest("GET", `/publishers/google/models/${args.modelId}`, undefined, undefined, { apiVersion: "v1beta1" });
+      return vertexRequest("GET", `/publishers/google/models/${args.modelId}`, undefined, undefined, { apiVersion: "v1beta1", noProjectPath: true });
     },
   },
 

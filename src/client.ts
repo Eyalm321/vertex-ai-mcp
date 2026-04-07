@@ -32,16 +32,18 @@ export async function vertexRequest<T>(
   path: string,
   body?: Record<string, unknown>,
   params?: Record<string, string | number | boolean | undefined>,
-  options?: { apiVersion?: string; global?: boolean }
+  options?: { apiVersion?: string; global?: boolean; noProjectPath?: boolean }
 ): Promise<T> {
   let baseUrl: string;
+  const version = options?.apiVersion || "v1";
   if (options?.global) {
-    const version = options?.apiVersion || "v1beta1";
     baseUrl = `https://aiplatform.googleapis.com/${version}`;
+  } else if (options?.noProjectPath) {
+    const location = getLocation();
+    baseUrl = `https://${location}-aiplatform.googleapis.com/${version}`;
   } else {
     const location = getLocation();
     const projectId = getProjectId();
-    const version = options?.apiVersion || "v1";
     baseUrl = `https://${location}-aiplatform.googleapis.com/${version}/projects/${projectId}/locations/${location}`;
   }
   const url = new URL(`${baseUrl}${path}`);
