@@ -32,11 +32,16 @@ export async function vertexRequest<T>(
   path: string,
   body?: Record<string, unknown>,
   params?: Record<string, string | number | boolean | undefined>,
-  options?: { apiVersion?: string; global?: boolean; noProjectPath?: boolean }
+  options?: { apiVersion?: string; global?: boolean; globalLocation?: boolean; noProjectPath?: boolean }
 ): Promise<T> {
   let baseUrl: string;
   const version = options?.apiVersion || "v1";
-  if (options?.global) {
+  if (options?.globalLocation) {
+    // Global endpoint with project path: aiplatform.googleapis.com/v1/projects/{project}/locations/global
+    // Used for preview models (Gemini 3.x, etc.) that are only available on the global endpoint
+    const projectId = getProjectId();
+    baseUrl = `https://aiplatform.googleapis.com/${version}/projects/${projectId}/locations/global`;
+  } else if (options?.global) {
     baseUrl = `https://aiplatform.googleapis.com/${version}`;
   } else if (options?.noProjectPath) {
     const location = getLocation();

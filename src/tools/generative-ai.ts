@@ -74,6 +74,15 @@ async function resolveBase64(base64?: string, filePath?: string): Promise<string
   throw new Error("Either base64 data or a file path must be provided");
 }
 
+/** Preview models (e.g. gemini-3-pro-preview) are only available on the global endpoint */
+function isPreviewModel(model: string): boolean {
+  return model.includes("preview");
+}
+
+function modelEndpointOptions(model: string): { globalLocation?: boolean } | undefined {
+  return isPreviewModel(model) ? { globalLocation: true } : undefined;
+}
+
 export const generativeAiTools = [
   // ─── Model Discovery ───────────────────────────────────────────
   {
@@ -142,7 +151,7 @@ export const generativeAiTools = [
       return vertexRequest("POST", `/publishers/google/models/${args.model}:predict`, {
         instances: [{ prompt: args.prompt }],
         parameters,
-      });
+      }, undefined, modelEndpointOptions(args.model));
     },
   },
   {
@@ -230,7 +239,7 @@ export const generativeAiTools = [
         return vertexRequest("POST", `/publishers/google/models/${args.model}:predict`, {
           instances: [{ prompt: args.prompt, referenceImages }],
           parameters,
-        });
+        }, undefined, modelEndpointOptions(args.model));
       } else {
         // Legacy format for older models (imagegeneration@006, etc.)
         const instance: Record<string, unknown> = {
@@ -247,7 +256,7 @@ export const generativeAiTools = [
         return vertexRequest("POST", `/publishers/google/models/${args.model}:predict`, {
           instances: [instance],
           parameters,
-        });
+        }, undefined, modelEndpointOptions(args.model));
       }
     },
   },
@@ -286,7 +295,7 @@ export const generativeAiTools = [
       return vertexRequest("POST", `/publishers/google/models/${args.model}:predict`, {
         instances: [instance],
         parameters,
-      });
+      }, undefined, modelEndpointOptions(args.model));
     },
   },
 
@@ -341,7 +350,7 @@ export const generativeAiTools = [
       if (Object.keys(generationConfig).length > 0) {
         body.generationConfig = generationConfig;
       }
-      return vertexRequest("POST", `/publishers/google/models/${args.model}:generateContent`, body);
+      return vertexRequest("POST", `/publishers/google/models/${args.model}:generateContent`, body, undefined, modelEndpointOptions(args.model));
     },
   },
   {
@@ -384,7 +393,7 @@ export const generativeAiTools = [
       if (Object.keys(generationConfig).length > 0) {
         body.generationConfig = generationConfig;
       }
-      return vertexRequest("POST", `/publishers/google/models/${args.model}:streamGenerateContent`, body);
+      return vertexRequest("POST", `/publishers/google/models/${args.model}:streamGenerateContent`, body, undefined, modelEndpointOptions(args.model));
     },
   },
   {
@@ -414,7 +423,7 @@ export const generativeAiTools = [
       } else {
         throw new Error("Provide either prompt/filePaths or contents");
       }
-      return vertexRequest("POST", `/publishers/google/models/${args.model}:countTokens`, { contents });
+      return vertexRequest("POST", `/publishers/google/models/${args.model}:countTokens`, { contents }, undefined, modelEndpointOptions(args.model));
     },
   },
 
@@ -441,7 +450,7 @@ export const generativeAiTools = [
       return vertexRequest("POST", `/publishers/google/models/${args.model}:predict`, {
         instances,
         ...(Object.keys(parameters).length > 0 && { parameters }),
-      });
+      }, undefined, modelEndpointOptions(args.model));
     },
   },
   {
@@ -472,7 +481,7 @@ export const generativeAiTools = [
       return vertexRequest("POST", `/publishers/google/models/${args.model}:predict`, {
         instances: [instance],
         ...(Object.keys(parameters).length > 0 && { parameters }),
-      });
+      }, undefined, modelEndpointOptions(args.model));
     },
   },
 
@@ -517,7 +526,7 @@ export const generativeAiTools = [
       return vertexRequest("POST", `/publishers/google/models/${args.model}:predictLongRunning`, {
         instances: [instance],
         parameters,
-      });
+      }, undefined, modelEndpointOptions(args.model));
     },
   },
 
