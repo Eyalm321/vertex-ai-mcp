@@ -70,7 +70,7 @@ Or in your MCP config:
 
 ## Tools (197)
 
-### Generative AI — Imagen, Gemini, Veo, Embeddings (16)
+### Generative AI — Imagen, Gemini, Veo, GCS, Embeddings (18)
 
 **Model Discovery** — Call `vertex_list_publisher_models` first if unsure which model to use. Returns all available models (Gemini, Imagen, Veo, embeddings, TTS, Lyria) from the live API.
 `vertex_list_publisher_models`, `vertex_get_publisher_model`
@@ -82,10 +82,23 @@ Or in your MCP config:
 `vertex_generate_content`, `vertex_stream_generate_content`, `vertex_count_tokens`
 
 **Veo (Video Generation)**
-`vertex_generate_video`
+`vertex_generate_video`, `vertex_fetch_predict_operation`
+
+**GCS (Cloud Storage)**
+`vertex_fetch_gcs_object`
 
 **Embeddings**
 `vertex_embed_text`, `vertex_embed_multimodal`
+
+#### Veo End-to-End Workflow
+
+```
+vertex_generate_video → returns operation name
+  ↓
+vertex_fetch_predict_operation (poll until done=true) → returns gcsUri
+  ↓
+vertex_fetch_gcs_object (download video) → saves MP4 locally or returns base64
+```
 
 **Cached Content**
 `vertex_create_cached_content`, `vertex_get_cached_content`, `vertex_list_cached_contents`, `vertex_update_cached_content`, `vertex_delete_cached_content`

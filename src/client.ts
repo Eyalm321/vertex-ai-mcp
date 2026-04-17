@@ -11,14 +11,24 @@ function getAuth(): GoogleAuth {
   return cachedAuth;
 }
 
-function getProjectId(): string {
+export function getProjectId(): string {
   const projectId = process.env.GOOGLE_PROJECT_ID;
   if (!projectId) throw new Error("GOOGLE_PROJECT_ID environment variable is not set");
   return projectId;
 }
 
-function getLocation(): string {
+export function getLocation(): string {
   return process.env.GOOGLE_LOCATION || "us-central1";
+}
+
+export async function getAccessToken(): Promise<string> {
+  const auth = getAuth();
+  const client = await auth.getClient();
+  const tokenResponse = await client.getAccessToken();
+  if (!tokenResponse.token) {
+    throw new Error("Failed to obtain access token from Google Cloud credentials");
+  }
+  return tokenResponse.token;
 }
 
 function getBaseUrl(): string {

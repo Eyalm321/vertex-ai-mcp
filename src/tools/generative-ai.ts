@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { readFile, access } from "fs/promises";
 import { extname, resolve, normalize } from "path";
-import { vertexRequest } from "../client.js";
+import { vertexRequest, getProjectId, getLocation, getAccessToken } from "../client.js";
+import { writeFile } from "fs/promises";
 
 const MIME_TYPES: Record<string, string> = {
   ".png": "image/png",
@@ -527,6 +528,155 @@ export const generativeAiTools = [
         instances: [instance],
         parameters,
       }, undefined, modelEndpointOptions(args.model));
+    },
+  },
+
+  // ─── Predict Operation Polling (Veo, Imagen, Lyria LROs) ────────
+  {
+    name: "vertex_fetch_predict_operation",
+    description: "Poll the status of a long-running predict operation (Veo video generation, Imagen batch, Lyria music, etc.). Returns { done, result, error }. When done=true, result contains the final output (e.g. videos[].gcsUri for Veo). Use this to poll after vertex_generate_video returns an operation name.",
+    inputSchema: z.object({
+      operationName: z.string().describe("Full operation resource name from the predictLongRunning response (e.g. projects/.../locations/.../publishers/google/models/veo-3.1-generate-001/operations/UUID)"),
+    }),
+    handler: async (args: { operationName: string }) => {
+      // Extract model resource path from the operation name
+      // e.g. "projects/X/locations/Y/publishers/google/models/veo-3.1-generate-001/operations/UUID"
+      // → model resource: "projects/X/locations/Y/publishers/google/models/veo-3.1-generate-001"
+      const opParts = args.operationName.split("/operations/");
+      if (opParts.length !== 2) {
+        throw new Error(`Invalid operation name format. Expected: projects/.../publishers/google/models/{model}/operations/{uuid}`);
+      }
+      const modelResource = opParts[0];
+
+      // Determine if this is a preview model that needs global endpoint
+      const isPreview = modelResource.includes("preview");
+      const location = getLocation();
+      const projectId = getProjectId();
+
+      let baseUrl: string;
+      if (isPreview) {
+        baseUrl = `https://aiplatform.googleapis.com/v1`;
+      } else {
+        baseUrl = `https://${location}-aiplatform.googleapis.com/v1`;
+      }
+
+      const url = `${baseUrl}/${modelResource}:fetchPredictOperation`;
+      const token = await getAccessToken();
+
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ operationName: args.operationName }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`Vertex AI API error ${res.status}: ${text}`);
+      }
+
+      const raw = await res.json() as Record<string, unknown>;
+
+      // Normalize the response into a simple { done, result, error } shape
+      const done = raw.done === true;
+      const error = raw.error as Record<string, unknown> | undefined;
+      const response = raw.response as Record<string, unknown> | undefined;
+
+      if (error) {
+        return { done: true, error: { code: error.code, message: error.message }, result: null };
+      }
+
+      if (done && response) {
+        // Extract video URIs if present (Veo)
+        const videos = (response as Record<string, unknown>).videos as Array<{ gcsUri?: string }> | undefined;
+        if (videos) {
+          return {
+            done: true,
+            error: null,
+            result: {
+              videos: videos.map((v) => ({ gcsUri: v.gcsUri })),
+            },
+          };
+        }
+        // Generic response for other model types
+        return { done: true, error: null, result: response };
+      }
+
+      // Still running
+      const metadata = raw.metadata as Record<string, unknown> | undefined;
+      return {
+        done: false,
+        error: null,
+        result: null,
+        metadata: metadata ? { state: (metadata as Record<string, unknown>).state } : undefined,
+      };
+    },
+  },
+
+  // ─── GCS Object Fetch ──────────────────────────────────────────
+  {
+    name: "vertex_fetch_gcs_object",
+    description: "Download an object from Google Cloud Storage using the MCP server's credentials. Useful for retrieving Veo-generated videos, batch prediction outputs, tuned model artifacts, or any private GCS object. Can return base64 data or save to a local file path.",
+    inputSchema: z.object({
+      gcsUri: z.string().describe("GCS URI of the object (e.g. gs://bucket-name/path/to/file.mp4)"),
+      savePath: z.string().optional().describe("Local file path to save the downloaded object. If omitted, returns base64-encoded data."),
+    }),
+    handler: async (args: { gcsUri: string; savePath?: string }) => {
+      // Parse gs://bucket/path
+      const match = args.gcsUri.match(/^gs:\/\/([^/]+)\/(.+)$/);
+      if (!match) {
+        throw new Error(`Invalid GCS URI format. Expected gs://bucket/path, got: ${args.gcsUri}`);
+      }
+      const [, bucket, objectPath] = match;
+
+      const token = await getAccessToken();
+      const url = `https://storage.googleapis.com/storage/v1/b/${encodeURIComponent(bucket)}/o/${encodeURIComponent(objectPath)}?alt=media`;
+
+      const res = await fetch(url, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`GCS error ${res.status}: ${text}`);
+      }
+
+      const buffer = Buffer.from(await res.arrayBuffer());
+
+      if (args.savePath) {
+        // Validate save path extension
+        const ext = extname(args.savePath).toLowerCase();
+        if (!ext) {
+          throw new Error("Save path must include a file extension");
+        }
+        await writeFile(args.savePath, buffer);
+        return {
+          saved: true,
+          path: args.savePath,
+          size: buffer.length,
+          sizeHuman: buffer.length > 1048576
+            ? `${(buffer.length / 1048576).toFixed(1)} MB`
+            : `${(buffer.length / 1024).toFixed(1)} KB`,
+        };
+      } else {
+        // Return base64 for small files, warn for large ones
+        const base64 = buffer.toString("base64");
+        const mimeType = getMimeType(args.gcsUri);
+        return {
+          mimeType,
+          size: buffer.length,
+          sizeHuman: buffer.length > 1048576
+            ? `${(buffer.length / 1048576).toFixed(1)} MB`
+            : `${(buffer.length / 1024).toFixed(1)} KB`,
+          data: base64,
+          warning: buffer.length > 5242880 ? "Large file (>5MB). Consider using savePath to write to disk instead." : undefined,
+        };
+      }
     },
   },
 

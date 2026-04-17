@@ -1,6 +1,6 @@
 {
   "name": "@eyalm321/vertex-ai-mcp",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "MCP server for Google Vertex AI — 180+ tools covering datasets, endpoints, models, indexes, featurestores, pipelines, tensorboards, and more",
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
