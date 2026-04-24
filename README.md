@@ -69,6 +69,10 @@ Or in your MCP config:
 | `GOOGLE_LOCATION` | No | `us-central1` | Vertex AI region |
 | `VERTEX_AI_MCP_IMAGE_OUTPUT_DIR` | No | cwd / tempdir | Directory to save generated images |
 | `VERTEX_AI_MCP_RETURN_BASE64` | No | `false` | If `true`, return raw base64 instead of saving to disk |
+| `VERTEX_AI_MCP_MAX_CONCURRENT_GEMINI_IMAGE` | No | `3` | Max concurrent Gemini image-gen calls (set to `2` if you keep hitting 429s) |
+| `VERTEX_AI_MCP_MAX_CONCURRENT_IMAGEN` | No | `3` | Max concurrent Imagen calls |
+| `VERTEX_AI_MCP_MAX_CONCURRENT_VEO` | No | `2` | Max concurrent Veo calls |
+| `VERTEX_AI_MCP_MIN_SPACING_MS` | No | `500` | Minimum ms between consecutive API calls per model family |
 
 ## Image Generation: Auto-Save to Disk
 
@@ -130,6 +134,32 @@ Pass `saveToPath` to control the exact output location:
 ### Opt out
 
 Set `VERTEX_AI_MCP_RETURN_BASE64=true` for legacy behavior (inline base64).
+
+## 429 / 503 Retry + Concurrency Smoothing
+
+Sporadic `429 RESOURCE_EXHAUSTED` errors (common on Nano Banana Pro) are absorbed automatically:
+
+- **Retry with truncated exponential backoff + jitter**: up to 5 retries at 2s / 4s / 8s / 16s / 32s (each multiplied by `random(0.5, 1.5)`). Total budget 60s.
+- **Retries on**: 429, 503, `fetch failed`, `ECONNRESET`, `ETIMEDOUT`, request timeout.
+- **Does NOT retry on**: 400, 401/403, 404, 500 — those fail immediately.
+- **Concurrency cap per model family**: max 3 in-flight Gemini-image calls, 3 Imagen calls, 2 Veo calls (all configurable via env vars above). Requests beyond the cap queue up.
+- **Min spacing**: 500ms between consecutive calls per model family — smooths bursts that would otherwise trigger quota spikes.
+
+When retries happen, they're logged to stderr and surfaced on async job records as `retries` + `retryHistory`:
+
+```json
+{
+  "jobId": "...",
+  "status": "completed",
+  "retries": 2,
+  "retryHistory": [
+    { "attempt": 1, "error": "Vertex AI API error 429: ...", "waitedMs": 2130, "timestamp": "2026-04-24T..." },
+    { "attempt": 2, "error": "Vertex AI API error 429: ...", "waitedMs": 4512, "timestamp": "2026-04-24T..." }
+  ]
+}
+```
+
+If you still hit 429s after the retry budget is exhausted, lower `VERTEX_AI_MCP_MAX_CONCURRENT_GEMINI_IMAGE` to 2 or file a Quota Increase Request in the Cloud Console.
 
 ## Async Mode (work around Claude Code's 60s tool timeout)
 

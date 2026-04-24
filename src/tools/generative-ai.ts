@@ -4,7 +4,9 @@ import { extname, resolve, normalize, join, isAbsolute, dirname } from "path";
 import { tmpdir } from "os";
 import { vertexRequest, getProjectId, getLocation, getAccessToken } from "../client.js";
 import { writeFile } from "fs/promises";
-import { createJob, getJob, listJobs, runAsyncJob } from "../job-store.js";
+import { createJob, getJob, listJobs, runAsyncJob, recordRetry } from "../job-store.js";
+import { withRetry } from "../retry.js";
+import { acquire, resolveLimiterKey, getLimiterOptions } from "../concurrency.js";
 
 const MIME_TYPES: Record<string, string> = {
   ".png": "image/png",
@@ -103,6 +105,28 @@ function getTimeoutForModel(model: string, imageSize?: string): number {
   if (imageSize === "2K") base += 60_000;
   if (imageSize === "4K") base += 180_000; // +60 (2K) + 120 (4K over 2K)
   return base;
+}
+
+/**
+ * Wrap a Vertex API call with per-model concurrency limiting and 429/503 retry.
+ * If jobId is provided, retry attempts are recorded on that job for surfacing
+ * via vertex_get_job.
+ */
+async function callWithSmoothing<T>(
+  model: string,
+  fn: () => Promise<T>,
+  jobId?: string,
+): Promise<T> {
+  const limiterOpts = getLimiterOptions(model);
+  const { key } = resolveLimiterKey(model);
+  const release = await acquire(key, limiterOpts);
+  try {
+    return await withRetry(fn, {
+      onAttempt: jobId ? (a) => recordRetry(jobId, a) : undefined,
+    });
+  } finally {
+    release();
+  }
 }
 
 /**
@@ -398,7 +422,7 @@ export const generativeAiTools = [
       async: z.boolean().optional().describe("If true, start the generation in the background and return a jobId immediately (bypasses the MCP client's 60s tool-call timeout). Poll with vertex_fetch_generation_job. Recommended for Ultra models and 2K/4K."),
     }),
     handler: async (args: { model: string; prompt: string; sampleCount?: number; aspectRatio?: string; addWatermark?: boolean; enhancePrompt?: boolean; seed?: number; safetySetting?: string; personGeneration?: string; imageSize?: "1K" | "2K" | "4K"; saveToPath?: string; timeout?: number; async?: boolean }) => {
-      const execute = async (): Promise<Record<string, unknown>> => {
+      const execute = async (jobId?: string): Promise<Record<string, unknown>> => {
         const parameters: Record<string, unknown> = {};
         if (args.sampleCount !== undefined) parameters.sampleCount = args.sampleCount;
         if (args.aspectRatio !== undefined) parameters.aspectRatio = args.aspectRatio;
@@ -413,10 +437,10 @@ export const generativeAiTools = [
         if (sizeResolved.warning) warnings.push(sizeResolved.warning);
         const effectiveSize = sizeResolved.imageSize ?? undefined;
         const timeoutMs = args.timeout ? args.timeout * 1000 : getTimeoutForModel(args.model, effectiveSize);
-        const response = await vertexRequest<Record<string, unknown>>("POST", `/publishers/google/models/${args.model}:predict`, {
+        const response = await callWithSmoothing(args.model, () => vertexRequest<Record<string, unknown>>("POST", `/publishers/google/models/${args.model}:predict`, {
           instances: [{ prompt: args.prompt }],
           parameters,
-        }, undefined, { ...modelEndpointOptions(args.model), timeoutMs });
+        }, undefined, { ...modelEndpointOptions(args.model), timeoutMs }), jobId);
         const saved = await saveImagenImages(response, "vertex_generate_image", args.saveToPath);
         return warnings.length > 0 ? { ...saved, warnings } : saved;
       };
@@ -425,7 +449,7 @@ export const generativeAiTools = [
           model: args.model,
           params: { prompt: args.prompt, imageSize: args.imageSize, sampleCount: args.sampleCount, aspectRatio: args.aspectRatio },
         });
-        runAsyncJob(job.jobId, execute);
+        runAsyncJob(job.jobId, () => execute(job.jobId));
         return { jobId: job.jobId, status: job.status, submittedAt: job.submittedAt, pollWith: "vertex_get_job" };
       }
       return execute();
@@ -469,7 +493,7 @@ export const generativeAiTools = [
       // File reads happen now (eagerly) so the async task doesn't depend on args
       const imageData = await resolveBase64(args.imageBase64, args.imagePath);
       const isCapabilityModel = args.model.includes("capability");
-      const execute = async (): Promise<Record<string, unknown>> => {
+      const execute = async (jobId?: string): Promise<Record<string, unknown>> => {
 
       if (isCapabilityModel) {
         // Imagen 3 capability model uses referenceImages format
@@ -520,10 +544,10 @@ export const generativeAiTools = [
         }
         if (args.sampleCount !== undefined) parameters.sampleCount = args.sampleCount;
         if (args.safetySetting !== undefined) parameters.safetySetting = args.safetySetting;
-        const response = await vertexRequest<Record<string, unknown>>("POST", `/publishers/google/models/${args.model}:predict`, {
+        const response = await callWithSmoothing(args.model, () => vertexRequest<Record<string, unknown>>("POST", `/publishers/google/models/${args.model}:predict`, {
           instances: [{ prompt: args.prompt, referenceImages }],
           parameters,
-        }, undefined, { ...modelEndpointOptions(args.model), timeoutMs });
+        }, undefined, { ...modelEndpointOptions(args.model), timeoutMs }), jobId);
         return saveImagenImages(response, "vertex_edit_image", args.saveToPath);
       } else {
         // Legacy format for older models (imagegeneration@006, etc.)
@@ -538,10 +562,10 @@ export const generativeAiTools = [
         const parameters: Record<string, unknown> = {};
         if (args.sampleCount !== undefined) parameters.sampleCount = args.sampleCount;
         if (args.safetySetting !== undefined) parameters.safetySetting = args.safetySetting;
-        const response = await vertexRequest<Record<string, unknown>>("POST", `/publishers/google/models/${args.model}:predict`, {
+        const response = await callWithSmoothing(args.model, () => vertexRequest<Record<string, unknown>>("POST", `/publishers/google/models/${args.model}:predict`, {
           instances: [instance],
           parameters,
-        }, undefined, { ...modelEndpointOptions(args.model), timeoutMs });
+        }, undefined, { ...modelEndpointOptions(args.model), timeoutMs }), jobId);
         return saveImagenImages(response, "vertex_edit_image", args.saveToPath);
       }
       }; // end execute
@@ -550,7 +574,7 @@ export const generativeAiTools = [
           model: args.model,
           params: { prompt: args.prompt, editMode: args.editMode, sampleCount: args.sampleCount },
         });
-        runAsyncJob(job.jobId, execute);
+        runAsyncJob(job.jobId, () => execute(job.jobId));
         return { jobId: job.jobId, status: job.status, submittedAt: job.submittedAt, pollWith: "vertex_get_job" };
       }
       return execute();
@@ -592,11 +616,11 @@ export const generativeAiTools = [
         parameters.outputOptions = outputOptions;
       }
       const timeoutMs = args.timeout ? args.timeout * 1000 : getTimeoutForModel(args.model);
-      const execute = async (): Promise<Record<string, unknown>> => {
-        const response = await vertexRequest<Record<string, unknown>>("POST", `/publishers/google/models/${args.model}:predict`, {
+      const execute = async (jobId?: string): Promise<Record<string, unknown>> => {
+        const response = await callWithSmoothing(args.model, () => vertexRequest<Record<string, unknown>>("POST", `/publishers/google/models/${args.model}:predict`, {
           instances: [instance],
           parameters,
-        }, undefined, { ...modelEndpointOptions(args.model), timeoutMs });
+        }, undefined, { ...modelEndpointOptions(args.model), timeoutMs }), jobId);
         return saveImagenImages(response, "vertex_upscale_image", args.saveToPath);
       };
       if (args.async) {
@@ -604,7 +628,7 @@ export const generativeAiTools = [
           model: args.model,
           params: { upscaleFactor: args.upscaleFactor, sampleCount: args.sampleCount },
         });
-        runAsyncJob(job.jobId, execute);
+        runAsyncJob(job.jobId, () => execute(job.jobId));
         return { jobId: job.jobId, status: job.status, submittedAt: job.submittedAt, pollWith: "vertex_get_job" };
       }
       return execute();
@@ -675,8 +699,8 @@ export const generativeAiTools = [
       }
       const effectiveSize = sizeResolved.imageSize ?? undefined;
       const timeoutMs = args.timeout ? args.timeout * 1000 : getTimeoutForModel(args.model, effectiveSize);
-      const execute = async (): Promise<Record<string, unknown>> => {
-        const response = await vertexRequest<Record<string, unknown>>("POST", `/publishers/google/models/${args.model}:generateContent`, body, undefined, { ...modelEndpointOptions(args.model), timeoutMs });
+      const execute = async (jobId?: string): Promise<Record<string, unknown>> => {
+        const response = await callWithSmoothing(args.model, () => vertexRequest<Record<string, unknown>>("POST", `/publishers/google/models/${args.model}:generateContent`, body, undefined, { ...modelEndpointOptions(args.model), timeoutMs }), jobId);
         const saved = await saveGeminiImages(response, "vertex_generate_content", args.saveToPath);
         return warnings.length > 0 ? { ...saved, warnings } : saved;
       };
@@ -685,7 +709,7 @@ export const generativeAiTools = [
           model: args.model,
           params: { prompt: args.prompt, imageSize: args.imageSize, hasFiles: !!args.filePaths?.length },
         });
-        runAsyncJob(job.jobId, execute);
+        runAsyncJob(job.jobId, () => execute(job.jobId));
         return { jobId: job.jobId, status: job.status, submittedAt: job.submittedAt, pollWith: "vertex_get_job" };
       }
       return execute();

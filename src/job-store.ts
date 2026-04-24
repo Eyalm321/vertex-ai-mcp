@@ -16,6 +16,13 @@ export interface JobError {
   message: string;
 }
 
+export interface RetryRecord {
+  attempt: number;
+  error: string;
+  waitedMs: number;
+  timestamp: string;
+}
+
 interface InternalJob {
   id: string;
   toolName: string;
@@ -26,6 +33,7 @@ interface InternalJob {
   submittedAt: number; // epoch ms
   completedAt?: number; // epoch ms
   params?: Record<string, unknown>;
+  retryHistory?: RetryRecord[];
 }
 
 export interface JobView {
@@ -39,6 +47,8 @@ export interface JobView {
   result?: unknown;
   error?: JobError;
   params?: Record<string, unknown>;
+  retries?: number;
+  retryHistory?: RetryRecord[];
 }
 
 const COMPLETED_TTL_MS = 60 * 60 * 1000; // keep completed jobs 1 hour
@@ -98,7 +108,18 @@ function toView(job: InternalJob): JobView {
     ...(job.result !== undefined ? { result: job.result } : {}),
     ...(job.error ? { error: job.error } : {}),
     ...(job.params ? { params: job.params } : {}),
+    ...(job.retryHistory && job.retryHistory.length > 0
+      ? { retries: job.retryHistory.length, retryHistory: job.retryHistory }
+      : {}),
   };
+}
+
+/** Record a retry attempt on a job. Called from within the async task. */
+export function recordRetry(id: string, record: RetryRecord): void {
+  const job = jobs.get(id);
+  if (!job) return;
+  if (!job.retryHistory) job.retryHistory = [];
+  job.retryHistory.push(record);
 }
 
 export function createJob(toolName: string, opts?: { model?: string; params?: Record<string, unknown> }): JobView {
