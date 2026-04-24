@@ -131,6 +131,46 @@ Pass `saveToPath` to control the exact output location:
 
 Set `VERTEX_AI_MCP_RETURN_BASE64=true` for legacy behavior (inline base64).
 
+## Async Mode (work around Claude Code's 60s tool timeout)
+
+Claude Code has a hardcoded 60-second timeout for MCP tool calls that can't be configured. Nano Banana Pro at 2K/4K and Imagen Ultra can easily exceed this. Pass `async: true` to any of `vertex_generate_content`, `vertex_generate_image`, `vertex_edit_image`, `vertex_upscale_image` to return a `jobId` immediately — the generation keeps running server-side — then poll with `vertex_get_job`.
+
+### Workflow
+
+```
+// 1. Submit
+result = vertex_generate_content(
+  model: "gemini-3-pro-image-preview",
+  prompt: "...",
+  imageSize: "4K",
+  async: true
+)
+// → { jobId: "abc123...", status: "pending", submittedAt: "2026-04-24T11:15:00Z", pollWith: "vertex_get_job" }
+
+// 2. Poll loop
+loop:
+  job = vertex_get_job(jobId: "abc123...")
+  if job.status == "completed":
+    path = job.result.candidates[0].content.parts[-1].inlineData.filePath
+    break
+  if job.status == "failed":
+    handle(job.error)  // { code: "API_ERROR", message: "..." }
+    break
+  wait(5s)
+```
+
+### Status values
+- `pending` — submitted but not yet started (negligible window)
+- `running` — API call in flight
+- `completed` — `result` populated with same shape as the sync call
+- `failed` — `error: { code, message }` populated
+
+### Operational details
+- Completed jobs kept for **1 hour**.
+- Running jobs auto-fail after **15 min** (hard timeout).
+- Store capped at 100 jobs; oldest evicted first.
+- Use `vertex_list_jobs` (optional `{ limit, status }`) for observability.
+
 ## Image Resolution (`imageSize`)
 
 `vertex_generate_image` and `vertex_generate_content` accept an optional `imageSize` parameter: `"1K"`, `"2K"`, or `"4K"`. Omit for the model's default.

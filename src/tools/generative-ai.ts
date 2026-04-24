@@ -4,6 +4,7 @@ import { extname, resolve, normalize, join, isAbsolute, dirname } from "path";
 import { tmpdir } from "os";
 import { vertexRequest, getProjectId, getLocation, getAccessToken } from "../client.js";
 import { writeFile } from "fs/promises";
+import { createJob, getJob, listJobs, runAsyncJob } from "../job-store.js";
 
 const MIME_TYPES: Record<string, string> = {
   ".png": "image/png",
@@ -394,28 +395,40 @@ export const generativeAiTools = [
       imageSize: z.enum(["1K", "2K", "4K"]).optional().describe("Output image resolution. 1K ~1024px long side (default). 2K ~2048px (Imagen 4). 4K ~4096px (Imagen 4 Ultra only). Omit for the model's default."),
       saveToPath: z.string().optional().describe("Specific path to save the image. Absolute paths used as-is; relative paths resolved against the output dir. If a directory, auto-filename is appended."),
       timeout: z.number().optional().describe("Request timeout in seconds. Defaults to a model-aware value (120s for Imagen, 180s for Ultra; +60s for 2K, +180s for 4K)."),
+      async: z.boolean().optional().describe("If true, start the generation in the background and return a jobId immediately (bypasses the MCP client's 60s tool-call timeout). Poll with vertex_fetch_generation_job. Recommended for Ultra models and 2K/4K."),
     }),
-    handler: async (args: { model: string; prompt: string; sampleCount?: number; aspectRatio?: string; addWatermark?: boolean; enhancePrompt?: boolean; seed?: number; safetySetting?: string; personGeneration?: string; imageSize?: "1K" | "2K" | "4K"; saveToPath?: string; timeout?: number }) => {
-      const parameters: Record<string, unknown> = {};
-      if (args.sampleCount !== undefined) parameters.sampleCount = args.sampleCount;
-      if (args.aspectRatio !== undefined) parameters.aspectRatio = args.aspectRatio;
-      if (args.addWatermark !== undefined) parameters.addWatermark = args.addWatermark;
-      if (args.enhancePrompt !== undefined) parameters.enhancePrompt = args.enhancePrompt;
-      if (args.seed !== undefined) parameters.seed = args.seed;
-      if (args.safetySetting !== undefined) parameters.safetySetting = args.safetySetting;
-      if (args.personGeneration !== undefined) parameters.personGeneration = args.personGeneration;
-      const warnings: string[] = [];
-      const sizeResolved = resolveImagenImageSize(args.model, args.imageSize);
-      if (sizeResolved.imageSize) parameters.sampleImageSize = sizeResolved.imageSize;
-      if (sizeResolved.warning) warnings.push(sizeResolved.warning);
-      const effectiveSize = sizeResolved.imageSize ?? undefined;
-      const timeoutMs = args.timeout ? args.timeout * 1000 : getTimeoutForModel(args.model, effectiveSize);
-      const response = await vertexRequest<Record<string, unknown>>("POST", `/publishers/google/models/${args.model}:predict`, {
-        instances: [{ prompt: args.prompt }],
-        parameters,
-      }, undefined, { ...modelEndpointOptions(args.model), timeoutMs });
-      const saved = await saveImagenImages(response, "vertex_generate_image", args.saveToPath);
-      return warnings.length > 0 ? { ...saved, warnings } : saved;
+    handler: async (args: { model: string; prompt: string; sampleCount?: number; aspectRatio?: string; addWatermark?: boolean; enhancePrompt?: boolean; seed?: number; safetySetting?: string; personGeneration?: string; imageSize?: "1K" | "2K" | "4K"; saveToPath?: string; timeout?: number; async?: boolean }) => {
+      const execute = async (): Promise<Record<string, unknown>> => {
+        const parameters: Record<string, unknown> = {};
+        if (args.sampleCount !== undefined) parameters.sampleCount = args.sampleCount;
+        if (args.aspectRatio !== undefined) parameters.aspectRatio = args.aspectRatio;
+        if (args.addWatermark !== undefined) parameters.addWatermark = args.addWatermark;
+        if (args.enhancePrompt !== undefined) parameters.enhancePrompt = args.enhancePrompt;
+        if (args.seed !== undefined) parameters.seed = args.seed;
+        if (args.safetySetting !== undefined) parameters.safetySetting = args.safetySetting;
+        if (args.personGeneration !== undefined) parameters.personGeneration = args.personGeneration;
+        const warnings: string[] = [];
+        const sizeResolved = resolveImagenImageSize(args.model, args.imageSize);
+        if (sizeResolved.imageSize) parameters.sampleImageSize = sizeResolved.imageSize;
+        if (sizeResolved.warning) warnings.push(sizeResolved.warning);
+        const effectiveSize = sizeResolved.imageSize ?? undefined;
+        const timeoutMs = args.timeout ? args.timeout * 1000 : getTimeoutForModel(args.model, effectiveSize);
+        const response = await vertexRequest<Record<string, unknown>>("POST", `/publishers/google/models/${args.model}:predict`, {
+          instances: [{ prompt: args.prompt }],
+          parameters,
+        }, undefined, { ...modelEndpointOptions(args.model), timeoutMs });
+        const saved = await saveImagenImages(response, "vertex_generate_image", args.saveToPath);
+        return warnings.length > 0 ? { ...saved, warnings } : saved;
+      };
+      if (args.async) {
+        const job = createJob("vertex_generate_image", {
+          model: args.model,
+          params: { prompt: args.prompt, imageSize: args.imageSize, sampleCount: args.sampleCount, aspectRatio: args.aspectRatio },
+        });
+        runAsyncJob(job.jobId, execute);
+        return { jobId: job.jobId, status: job.status, submittedAt: job.submittedAt, pollWith: "vertex_get_job" };
+      }
+      return execute();
     },
   },
   {
@@ -441,6 +454,7 @@ export const generativeAiTools = [
       safetySetting: z.string().optional().describe("Safety filter threshold"),
       saveToPath: z.string().optional().describe("Specific path to save the edited image. Absolute paths used as-is; relative paths resolved against output dir."),
       timeout: z.number().optional().describe("Request timeout in seconds. Defaults to a model-aware value."),
+      async: z.boolean().optional().describe("If true, start in background and return a jobId immediately. Poll with vertex_get_job."),
     }),
     handler: async (args: {
       model: string; prompt: string; imagePath?: string; imageBase64?: string;
@@ -449,11 +463,13 @@ export const generativeAiTools = [
       stylePath?: string; styleBase64?: string;
       subjectPath?: string; subjectBase64?: string;
       baseSteps?: number; sampleCount?: number; safetySetting?: string;
-      saveToPath?: string; timeout?: number;
+      saveToPath?: string; timeout?: number; async?: boolean;
     }) => {
       const timeoutMs = args.timeout ? args.timeout * 1000 : getTimeoutForModel(args.model);
+      // File reads happen now (eagerly) so the async task doesn't depend on args
       const imageData = await resolveBase64(args.imageBase64, args.imagePath);
       const isCapabilityModel = args.model.includes("capability");
+      const execute = async (): Promise<Record<string, unknown>> => {
 
       if (isCapabilityModel) {
         // Imagen 3 capability model uses referenceImages format
@@ -528,6 +544,16 @@ export const generativeAiTools = [
         }, undefined, { ...modelEndpointOptions(args.model), timeoutMs });
         return saveImagenImages(response, "vertex_edit_image", args.saveToPath);
       }
+      }; // end execute
+      if (args.async) {
+        const job = createJob("vertex_edit_image", {
+          model: args.model,
+          params: { prompt: args.prompt, editMode: args.editMode, sampleCount: args.sampleCount },
+        });
+        runAsyncJob(job.jobId, execute);
+        return { jobId: job.jobId, status: job.status, submittedAt: job.submittedAt, pollWith: "vertex_get_job" };
+      }
+      return execute();
     },
   },
   {
@@ -545,8 +571,9 @@ export const generativeAiTools = [
       storageUri: z.string().optional().describe("GCS URI to store the upscaled image (e.g. gs://bucket/output/)"),
       saveToPath: z.string().optional().describe("Specific path to save the upscaled image. Absolute paths used as-is; relative paths resolved against output dir."),
       timeout: z.number().optional().describe("Request timeout in seconds. Defaults to a model-aware value."),
+      async: z.boolean().optional().describe("If true, start in background and return a jobId immediately. Poll with vertex_get_job."),
     }),
-    handler: async (args: { model: string; prompt?: string; imagePath?: string; imageBase64?: string; upscaleFactor?: string; sampleCount?: number; outputMimeType?: string; compressionQuality?: number; storageUri?: string; saveToPath?: string; timeout?: number }) => {
+    handler: async (args: { model: string; prompt?: string; imagePath?: string; imageBase64?: string; upscaleFactor?: string; sampleCount?: number; outputMimeType?: string; compressionQuality?: number; storageUri?: string; saveToPath?: string; timeout?: number; async?: boolean }) => {
       const imageData = await resolveBase64(args.imageBase64, args.imagePath);
       const instance: Record<string, unknown> = {
         image: { bytesBase64Encoded: imageData },
@@ -565,11 +592,22 @@ export const generativeAiTools = [
         parameters.outputOptions = outputOptions;
       }
       const timeoutMs = args.timeout ? args.timeout * 1000 : getTimeoutForModel(args.model);
-      const response = await vertexRequest<Record<string, unknown>>("POST", `/publishers/google/models/${args.model}:predict`, {
-        instances: [instance],
-        parameters,
-      }, undefined, { ...modelEndpointOptions(args.model), timeoutMs });
-      return saveImagenImages(response, "vertex_upscale_image", args.saveToPath);
+      const execute = async (): Promise<Record<string, unknown>> => {
+        const response = await vertexRequest<Record<string, unknown>>("POST", `/publishers/google/models/${args.model}:predict`, {
+          instances: [instance],
+          parameters,
+        }, undefined, { ...modelEndpointOptions(args.model), timeoutMs });
+        return saveImagenImages(response, "vertex_upscale_image", args.saveToPath);
+      };
+      if (args.async) {
+        const job = createJob("vertex_upscale_image", {
+          model: args.model,
+          params: { upscaleFactor: args.upscaleFactor, sampleCount: args.sampleCount },
+        });
+        runAsyncJob(job.jobId, execute);
+        return { jobId: job.jobId, status: job.status, submittedAt: job.submittedAt, pollWith: "vertex_get_job" };
+      }
+      return execute();
     },
   },
 
@@ -592,8 +630,10 @@ export const generativeAiTools = [
       imageSize: z.enum(["1K", "2K", "4K"]).optional().describe("Output image resolution for image-generation models. gemini-3-pro-image-preview (Nano Banana Pro) and gemini-3.1-flash-image-preview (Nano Banana 2) support 1K/2K/4K natively. gemini-2.5-flash-image (original Nano Banana) only supports 1K — 2K/4K requests will warn and fall back. Omit for the model's default."),
       saveToPath: z.string().optional().describe("Specific path to save generated output images (only applies to image-generation models). Absolute paths used as-is; relative resolved against output dir."),
       timeout: z.number().optional().describe("Request timeout in seconds. Defaults to a model-aware value (60s text, 300s image gen; +60s for 2K)."),
+      async: z.boolean().optional().describe("If true, start generation in the background and return a jobId immediately (bypasses the MCP client's 60s tool-call timeout). Poll with vertex_fetch_generation_job. Strongly recommended for Nano Banana Pro image generation at 2K/4K."),
     }),
-    handler: async (args: { model: string; prompt?: string; filePaths?: string[]; contents?: Record<string, unknown>[]; systemInstruction?: string; temperature?: number; maxOutputTokens?: number; topP?: number; topK?: number; responseMimeType?: string; stopSequences?: string[]; imageSize?: "1K" | "2K" | "4K"; saveToPath?: string; timeout?: number }) => {
+    handler: async (args: { model: string; prompt?: string; filePaths?: string[]; contents?: Record<string, unknown>[]; systemInstruction?: string; temperature?: number; maxOutputTokens?: number; topP?: number; topK?: number; responseMimeType?: string; stopSequences?: string[]; imageSize?: "1K" | "2K" | "4K"; saveToPath?: string; timeout?: number; async?: boolean }) => {
+      // Build request body eagerly — file reads need to happen now, not at poll time
       let contents: Record<string, unknown>[];
       if (args.prompt || args.filePaths) {
         const parts: Record<string, unknown>[] = [];
@@ -635,9 +675,20 @@ export const generativeAiTools = [
       }
       const effectiveSize = sizeResolved.imageSize ?? undefined;
       const timeoutMs = args.timeout ? args.timeout * 1000 : getTimeoutForModel(args.model, effectiveSize);
-      const response = await vertexRequest<Record<string, unknown>>("POST", `/publishers/google/models/${args.model}:generateContent`, body, undefined, { ...modelEndpointOptions(args.model), timeoutMs });
-      const saved = await saveGeminiImages(response, "vertex_generate_content", args.saveToPath);
-      return warnings.length > 0 ? { ...saved, warnings } : saved;
+      const execute = async (): Promise<Record<string, unknown>> => {
+        const response = await vertexRequest<Record<string, unknown>>("POST", `/publishers/google/models/${args.model}:generateContent`, body, undefined, { ...modelEndpointOptions(args.model), timeoutMs });
+        const saved = await saveGeminiImages(response, "vertex_generate_content", args.saveToPath);
+        return warnings.length > 0 ? { ...saved, warnings } : saved;
+      };
+      if (args.async) {
+        const job = createJob("vertex_generate_content", {
+          model: args.model,
+          params: { prompt: args.prompt, imageSize: args.imageSize, hasFiles: !!args.filePaths?.length },
+        });
+        runAsyncJob(job.jobId, execute);
+        return { jobId: job.jobId, status: job.status, submittedAt: job.submittedAt, pollWith: "vertex_get_job" };
+      }
+      return execute();
     },
   },
   {
@@ -967,6 +1018,39 @@ export const generativeAiTools = [
           warning: buffer.length > 5242880 ? "Large file (>5MB). Consider using savePath to write to disk instead." : undefined,
         };
       }
+    },
+  },
+
+  // ─── Async Job Polling (for long-running generations) ─────────
+  {
+    name: "vertex_get_job",
+    description: "Poll the status of an async Vertex AI job started with async:true on vertex_generate_content, vertex_generate_image, vertex_edit_image, or vertex_upscale_image. Used to work around Claude Code's hardcoded 60s MCP tool-call timeout for long-running image generation (Nano Banana Pro at 2K/4K, Imagen Ultra, etc.). Status values: 'pending' (just submitted), 'running' (API call in-flight), 'completed' (result ready), 'failed' (error recorded). Completed jobs retained for 1 hour.",
+    inputSchema: z.object({
+      jobId: z.string().describe("The jobId returned from an async generation call"),
+    }),
+    handler: async (args: { jobId: string }) => {
+      const job = getJob(args.jobId);
+      if (!job) {
+        throw new Error(`Job not found or expired: ${args.jobId}. Completed jobs are kept for 1 hour.`);
+      }
+      return job;
+    },
+  },
+  {
+    name: "vertex_list_jobs",
+    description: "List recent async Vertex AI jobs for observability/debugging. Shows jobId, status, model, timestamps, and elapsed time. Optionally filter by status.",
+    inputSchema: z.object({
+      limit: z.number().optional().describe("Maximum number of jobs to return (default 20)"),
+      status: z.enum(["pending", "running", "completed", "failed"]).optional().describe("Filter by status"),
+    }),
+    handler: async (args: { limit?: number; status?: "pending" | "running" | "completed" | "failed" }) => {
+      const jobs = listJobs({ limit: args.limit, status: args.status });
+      // Omit the heavy `result` field in list view — callers can fetch full details with vertex_get_job
+      const light = jobs.map((j) => {
+        const { result, ...rest } = j;
+        return rest;
+      });
+      return { jobs: light, count: light.length };
     },
   },
 
