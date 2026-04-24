@@ -42,7 +42,7 @@ export async function vertexRequest<T>(
   path: string,
   body?: Record<string, unknown>,
   params?: Record<string, string | number | boolean | undefined>,
-  options?: { apiVersion?: string; global?: boolean; globalLocation?: boolean; noProjectPath?: boolean }
+  options?: { apiVersion?: string; global?: boolean; globalLocation?: boolean; noProjectPath?: boolean; timeoutMs?: number }
 ): Promise<T> {
   let baseUrl: string;
   const version = options?.apiVersion || "v1";
@@ -91,7 +91,26 @@ export async function vertexRequest<T>(
     body: body ? JSON.stringify(body) : undefined,
   };
 
-  const res = await fetch(url.toString(), fetchOptions);
+  // Apply an optional per-request timeout via AbortController
+  const timeoutMs = options?.timeoutMs;
+  let timeoutHandle: NodeJS.Timeout | undefined;
+  if (timeoutMs && timeoutMs > 0) {
+    const controller = new AbortController();
+    timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+    fetchOptions.signal = controller.signal;
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(url.toString(), fetchOptions);
+  } catch (err) {
+    if ((err as Error).name === "AbortError") {
+      throw new Error(`Vertex AI request timed out after ${timeoutMs}ms`);
+    }
+    throw err;
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");

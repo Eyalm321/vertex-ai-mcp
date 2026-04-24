@@ -67,6 +67,85 @@ Or in your MCP config:
 |----------|----------|---------|-------------|
 | `GOOGLE_PROJECT_ID` | Yes | - | Your Google Cloud project ID |
 | `GOOGLE_LOCATION` | No | `us-central1` | Vertex AI region |
+| `VERTEX_AI_MCP_IMAGE_OUTPUT_DIR` | No | cwd / tempdir | Directory to save generated images |
+| `VERTEX_AI_MCP_RETURN_BASE64` | No | `false` | If `true`, return raw base64 instead of saving to disk |
+
+## Image Generation: Auto-Save to Disk
+
+By default, `vertex_generate_image`, `vertex_edit_image`, `vertex_upscale_image`, and `vertex_generate_content` (with image-gen models like `gemini-3-pro-image-preview`) **save generated images to disk and return file paths** instead of inline base64. This avoids blowing up the agent's context with multi-megabyte blobs.
+
+### Response shape
+
+**Before** (base64 inline):
+```json
+{
+  "predictions": [
+    { "bytesBase64Encoded": "iVBORw0KGgo...(2MB)...", "mimeType": "image/png" }
+  ]
+}
+```
+
+**After** (file path):
+```json
+{
+  "predictions": [
+    {
+      "filePath": "/path/to/outputs/vertex_generate_image-1777025157775-0.png",
+      "mimeType": "image/png",
+      "size": 1069885
+    }
+  ]
+}
+```
+
+For Gemini image generation, text parts are preserved alongside the file reference:
+```json
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          { "text": "Here is the reference sheet..." },
+          {
+            "inlineData": {
+              "filePath": "/path/to/outputs/vertex_generate_content-1777025436909-0.png",
+              "mimeType": "image/png",
+              "size": 1149149
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+
+### Custom output paths
+
+Pass `saveToPath` to control the exact output location:
+- Absolute path → used as-is
+- Relative path → resolved against the output dir
+- Existing directory → auto-filename is appended
+
+### Opt out
+
+Set `VERTEX_AI_MCP_RETURN_BASE64=true` for legacy behavior (inline base64).
+
+## Model-Aware Timeouts
+
+Image generation (especially Nano Banana Pro on `gemini-3-pro-image-preview`) can take 1-3 minutes. The MCP server picks a timeout based on the model name:
+
+| Model pattern | Timeout |
+|---------------|---------|
+| `veo-*` | 600s |
+| `gemini-3-*-image*` (Nano Banana Pro) | 300s |
+| `gemini-*-flash-image*` (Nano Banana Flash) | 180s |
+| `gemini-*image*` (other Gemini image-gen) | 300s |
+| `imagen-*-ultra-*` | 180s |
+| `imagen-*` | 120s |
+| all other Gemini models | 60s |
+
+Override per-call with the `timeout` parameter (seconds).
 
 ## Tools (197)
 

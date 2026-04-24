@@ -1,6 +1,7 @@
 import { z } from "zod";
-import { readFile, access } from "fs/promises";
-import { extname, resolve, normalize } from "path";
+import { readFile, access, mkdir, stat } from "fs/promises";
+import { extname, resolve, normalize, join, isAbsolute, dirname } from "path";
+import { tmpdir } from "os";
 import { vertexRequest, getProjectId, getLocation, getAccessToken } from "../client.js";
 import { writeFile } from "fs/promises";
 
@@ -84,6 +85,213 @@ function modelEndpointOptions(model: string): { globalLocation?: boolean } | und
   return isPreviewModel(model) ? { globalLocation: true } : undefined;
 }
 
+// ─── Model-aware timeouts ─────────────────────────────────────────
+/** Pick a timeout (ms) based on model name. Image generation models need longer. */
+function getTimeoutForModel(model: string): number {
+  if (model.startsWith("veo-")) return 600_000; // 10 min
+  if (/gemini-3.*image/i.test(model)) return 300_000; // Nano Banana Pro: 5 min
+  if (/gemini-.*flash-image/i.test(model)) return 180_000; // Nano Banana Flash: 3 min
+  if (/gemini.*image/i.test(model)) return 300_000; // Other Gemini image: 5 min
+  if (model.startsWith("imagen-")) {
+    if (model.includes("ultra")) return 180_000; // Imagen Ultra: 3 min
+    return 120_000; // Imagen: 2 min
+  }
+  return 60_000; // default text generation
+}
+
+// ─── Image output: MIME → extension ───────────────────────────────
+const MIME_TO_EXT: Record<string, string> = {
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/jpg": ".jpg",
+  "image/webp": ".webp",
+  "image/gif": ".gif",
+  "image/bmp": ".bmp",
+  "image/tiff": ".tiff",
+};
+
+function extForMimeType(mimeType: string): string {
+  return MIME_TO_EXT[mimeType.toLowerCase()] || ".bin";
+}
+
+/** Resolve the directory to write generated images into. */
+async function resolveOutputDir(): Promise<{ dir: string; fallbackUsed: boolean; warning?: string }> {
+  const configured = process.env.VERTEX_AI_MCP_IMAGE_OUTPUT_DIR;
+  const candidates = [
+    configured,
+    process.env.CLAUDE_WORKSPACE_OUTPUTS,
+    process.env.CLAUDE_WORKSPACE,
+    process.cwd(),
+  ].filter((p): p is string => !!p);
+
+  for (const candidate of candidates) {
+    try {
+      await mkdir(candidate, { recursive: true });
+      const s = await stat(candidate);
+      if (s.isDirectory()) {
+        return { dir: candidate, fallbackUsed: false };
+      }
+    } catch {
+      // Try next candidate
+    }
+  }
+
+  // Last resort: OS tempdir
+  const fallback = tmpdir();
+  return {
+    dir: fallback,
+    fallbackUsed: true,
+    warning: `Could not write to any configured output directory; using tempdir: ${fallback}`,
+  };
+}
+
+function shouldReturnBase64(): boolean {
+  const v = process.env.VERTEX_AI_MCP_RETURN_BASE64;
+  return v === "true" || v === "1" || v === "yes";
+}
+
+/**
+ * Save a base64 image buffer to disk. Returns { filePath, size }.
+ * If saveToPath is provided:
+ *   - absolute → used as-is
+ *   - relative → resolved against the output dir
+ *   - if it's a directory → append auto filename
+ * Otherwise a filename of {toolName}-{timestamp}-{index}.{ext} is used in the output dir.
+ */
+async function saveImageBuffer(
+  buffer: Buffer,
+  mimeType: string,
+  toolName: string,
+  index: number,
+  saveToPath?: string,
+): Promise<{ filePath: string; size: number; warning?: string }> {
+  const ext = extForMimeType(mimeType);
+  const { dir, warning } = await resolveOutputDir();
+
+  let targetPath: string;
+  if (saveToPath) {
+    targetPath = isAbsolute(saveToPath) ? saveToPath : join(dir, saveToPath);
+    // If targetPath is a directory (exists and is dir), append auto filename
+    try {
+      const s = await stat(targetPath);
+      if (s.isDirectory()) {
+        const filename = `${toolName}-${Date.now()}-${index}${ext}`;
+        targetPath = join(targetPath, filename);
+      }
+    } catch {
+      // Doesn't exist — assume it's a full file path
+    }
+  } else {
+    const filename = `${toolName}-${Date.now()}-${index}${ext}`;
+    targetPath = join(dir, filename);
+  }
+
+  // Ensure parent exists
+  await mkdir(dirname(targetPath), { recursive: true });
+
+  try {
+    await writeFile(targetPath, buffer);
+  } catch (err) {
+    // Fall back to tempdir
+    const fallbackPath = join(tmpdir(), `${toolName}-${Date.now()}-${index}${ext}`);
+    await writeFile(fallbackPath, buffer);
+    return {
+      filePath: fallbackPath,
+      size: buffer.length,
+      warning: `Could not write to ${targetPath} (${(err as Error).message}); saved to tempdir instead`,
+    };
+  }
+
+  return { filePath: targetPath, size: buffer.length, warning };
+}
+
+/**
+ * Post-process an Imagen predict response: replace predictions[].bytesBase64Encoded
+ * with filePath + size. Returns the modified response.
+ */
+async function saveImagenImages(
+  response: Record<string, unknown>,
+  toolName: string,
+  saveToPath?: string,
+): Promise<Record<string, unknown>> {
+  if (shouldReturnBase64()) return response;
+  const predictions = response.predictions as Array<Record<string, unknown>> | undefined;
+  if (!predictions) return response;
+
+  const outPredictions: Array<Record<string, unknown>> = [];
+  for (let i = 0; i < predictions.length; i++) {
+    const p = predictions[i];
+    const b64 = p.bytesBase64Encoded as string | undefined;
+    const mime = (p.mimeType as string | undefined) || "image/png";
+    if (b64) {
+      const buf = Buffer.from(b64, "base64");
+      const saved = await saveImageBuffer(buf, mime, toolName, i, saveToPath);
+      const { bytesBase64Encoded, ...rest } = p;
+      outPredictions.push({
+        ...rest,
+        filePath: saved.filePath,
+        mimeType: mime,
+        size: saved.size,
+        ...(saved.warning ? { warning: saved.warning } : {}),
+      });
+    } else {
+      outPredictions.push(p);
+    }
+  }
+  return { ...response, predictions: outPredictions };
+}
+
+/**
+ * Post-process a Gemini generateContent response: replace candidates[].content.parts[].inlineData.data
+ * with inlineData.filePath. Preserves text parts and all other fields.
+ */
+async function saveGeminiImages(
+  response: Record<string, unknown>,
+  toolName: string,
+  saveToPath?: string,
+): Promise<Record<string, unknown>> {
+  if (shouldReturnBase64()) return response;
+  const candidates = response.candidates as Array<Record<string, unknown>> | undefined;
+  if (!candidates) return response;
+
+  let imageIndex = 0;
+  const outCandidates: Array<Record<string, unknown>> = [];
+  for (const cand of candidates) {
+    const content = cand.content as Record<string, unknown> | undefined;
+    if (!content) {
+      outCandidates.push(cand);
+      continue;
+    }
+    const parts = content.parts as Array<Record<string, unknown>> | undefined;
+    if (!parts) {
+      outCandidates.push(cand);
+      continue;
+    }
+    const outParts: Array<Record<string, unknown>> = [];
+    for (const part of parts) {
+      const inlineData = part.inlineData as Record<string, unknown> | undefined;
+      const b64 = inlineData?.data as string | undefined;
+      const mime = inlineData?.mimeType as string | undefined;
+      if (b64 && mime && mime.startsWith("image/")) {
+        const buf = Buffer.from(b64, "base64");
+        const saved = await saveImageBuffer(buf, mime, toolName, imageIndex++, saveToPath);
+        outParts.push({
+          inlineData: {
+            filePath: saved.filePath,
+            mimeType: mime,
+            size: saved.size,
+            ...(saved.warning ? { warning: saved.warning } : {}),
+          },
+        });
+      } else {
+        outParts.push(part);
+      }
+    }
+    outCandidates.push({ ...cand, content: { ...content, parts: outParts } });
+  }
+  return { ...response, candidates: outCandidates };
+}
+
 export const generativeAiTools = [
   // ─── Model Discovery ───────────────────────────────────────────
   {
@@ -128,7 +336,7 @@ export const generativeAiTools = [
   // ─── Imagen: Image Generation ───────────────────────────────────
   {
     name: "vertex_generate_image",
-    description: "Generate images from a text prompt using Imagen. Returns base64-encoded images. If unsure which model to use, call vertex_list_publisher_models first to discover available Imagen models.",
+    description: "Generate images from a text prompt using Imagen. Images are saved to disk and file paths returned (set VERTEX_AI_MCP_RETURN_BASE64=true to return raw base64 instead). If unsure which model to use, call vertex_list_publisher_models first.",
     inputSchema: z.object({
       model: z.string().describe("Imagen model name. Call vertex_list_publisher_models to discover available models."),
       prompt: z.string().describe("Text description of the image to generate"),
@@ -139,8 +347,10 @@ export const generativeAiTools = [
       seed: z.number().optional().describe("Seed for deterministic output (requires addWatermark: false)"),
       safetySetting: z.string().optional().describe("Safety filter: block_low_and_above, block_medium_and_above, block_only_high, block_none"),
       personGeneration: z.string().optional().describe("People generation: allow_all, allow_adult, dont_allow"),
+      saveToPath: z.string().optional().describe("Specific path to save the image. Absolute paths used as-is; relative paths resolved against the output dir. If a directory, auto-filename is appended."),
+      timeout: z.number().optional().describe("Request timeout in seconds. Defaults to a model-aware value (120s for Imagen, 180s for Ultra)."),
     }),
-    handler: async (args: { model: string; prompt: string; sampleCount?: number; aspectRatio?: string; addWatermark?: boolean; enhancePrompt?: boolean; seed?: number; safetySetting?: string; personGeneration?: string }) => {
+    handler: async (args: { model: string; prompt: string; sampleCount?: number; aspectRatio?: string; addWatermark?: boolean; enhancePrompt?: boolean; seed?: number; safetySetting?: string; personGeneration?: string; saveToPath?: string; timeout?: number }) => {
       const parameters: Record<string, unknown> = {};
       if (args.sampleCount !== undefined) parameters.sampleCount = args.sampleCount;
       if (args.aspectRatio !== undefined) parameters.aspectRatio = args.aspectRatio;
@@ -149,10 +359,12 @@ export const generativeAiTools = [
       if (args.seed !== undefined) parameters.seed = args.seed;
       if (args.safetySetting !== undefined) parameters.safetySetting = args.safetySetting;
       if (args.personGeneration !== undefined) parameters.personGeneration = args.personGeneration;
-      return vertexRequest("POST", `/publishers/google/models/${args.model}:predict`, {
+      const timeoutMs = args.timeout ? args.timeout * 1000 : getTimeoutForModel(args.model);
+      const response = await vertexRequest<Record<string, unknown>>("POST", `/publishers/google/models/${args.model}:predict`, {
         instances: [{ prompt: args.prompt }],
         parameters,
-      }, undefined, modelEndpointOptions(args.model));
+      }, undefined, { ...modelEndpointOptions(args.model), timeoutMs });
+      return saveImagenImages(response, "vertex_generate_image", args.saveToPath);
     },
   },
   {
@@ -176,6 +388,8 @@ export const generativeAiTools = [
       baseSteps: z.number().optional().describe("Number of diffusion steps (higher = better quality but slower, default 35)"),
       sampleCount: z.number().optional().describe("Number of edited images to generate (1-4)"),
       safetySetting: z.string().optional().describe("Safety filter threshold"),
+      saveToPath: z.string().optional().describe("Specific path to save the edited image. Absolute paths used as-is; relative paths resolved against output dir."),
+      timeout: z.number().optional().describe("Request timeout in seconds. Defaults to a model-aware value."),
     }),
     handler: async (args: {
       model: string; prompt: string; imagePath?: string; imageBase64?: string;
@@ -184,7 +398,9 @@ export const generativeAiTools = [
       stylePath?: string; styleBase64?: string;
       subjectPath?: string; subjectBase64?: string;
       baseSteps?: number; sampleCount?: number; safetySetting?: string;
+      saveToPath?: string; timeout?: number;
     }) => {
+      const timeoutMs = args.timeout ? args.timeout * 1000 : getTimeoutForModel(args.model);
       const imageData = await resolveBase64(args.imageBase64, args.imagePath);
       const isCapabilityModel = args.model.includes("capability");
 
@@ -237,10 +453,11 @@ export const generativeAiTools = [
         }
         if (args.sampleCount !== undefined) parameters.sampleCount = args.sampleCount;
         if (args.safetySetting !== undefined) parameters.safetySetting = args.safetySetting;
-        return vertexRequest("POST", `/publishers/google/models/${args.model}:predict`, {
+        const response = await vertexRequest<Record<string, unknown>>("POST", `/publishers/google/models/${args.model}:predict`, {
           instances: [{ prompt: args.prompt, referenceImages }],
           parameters,
-        }, undefined, modelEndpointOptions(args.model));
+        }, undefined, { ...modelEndpointOptions(args.model), timeoutMs });
+        return saveImagenImages(response, "vertex_edit_image", args.saveToPath);
       } else {
         // Legacy format for older models (imagegeneration@006, etc.)
         const instance: Record<string, unknown> = {
@@ -254,10 +471,11 @@ export const generativeAiTools = [
         const parameters: Record<string, unknown> = {};
         if (args.sampleCount !== undefined) parameters.sampleCount = args.sampleCount;
         if (args.safetySetting !== undefined) parameters.safetySetting = args.safetySetting;
-        return vertexRequest("POST", `/publishers/google/models/${args.model}:predict`, {
+        const response = await vertexRequest<Record<string, unknown>>("POST", `/publishers/google/models/${args.model}:predict`, {
           instances: [instance],
           parameters,
-        }, undefined, modelEndpointOptions(args.model));
+        }, undefined, { ...modelEndpointOptions(args.model), timeoutMs });
+        return saveImagenImages(response, "vertex_edit_image", args.saveToPath);
       }
     },
   },
@@ -274,8 +492,10 @@ export const generativeAiTools = [
       outputMimeType: z.string().optional().describe("Output MIME type: image/png or image/jpeg"),
       compressionQuality: z.number().optional().describe("JPEG compression quality (0-100, only for image/jpeg)"),
       storageUri: z.string().optional().describe("GCS URI to store the upscaled image (e.g. gs://bucket/output/)"),
+      saveToPath: z.string().optional().describe("Specific path to save the upscaled image. Absolute paths used as-is; relative paths resolved against output dir."),
+      timeout: z.number().optional().describe("Request timeout in seconds. Defaults to a model-aware value."),
     }),
-    handler: async (args: { model: string; prompt?: string; imagePath?: string; imageBase64?: string; upscaleFactor?: string; sampleCount?: number; outputMimeType?: string; compressionQuality?: number; storageUri?: string }) => {
+    handler: async (args: { model: string; prompt?: string; imagePath?: string; imageBase64?: string; upscaleFactor?: string; sampleCount?: number; outputMimeType?: string; compressionQuality?: number; storageUri?: string; saveToPath?: string; timeout?: number }) => {
       const imageData = await resolveBase64(args.imageBase64, args.imagePath);
       const instance: Record<string, unknown> = {
         image: { bytesBase64Encoded: imageData },
@@ -293,17 +513,19 @@ export const generativeAiTools = [
         if (args.compressionQuality !== undefined) outputOptions.compressionQuality = args.compressionQuality;
         parameters.outputOptions = outputOptions;
       }
-      return vertexRequest("POST", `/publishers/google/models/${args.model}:predict`, {
+      const timeoutMs = args.timeout ? args.timeout * 1000 : getTimeoutForModel(args.model);
+      const response = await vertexRequest<Record<string, unknown>>("POST", `/publishers/google/models/${args.model}:predict`, {
         instances: [instance],
         parameters,
-      }, undefined, modelEndpointOptions(args.model));
+      }, undefined, { ...modelEndpointOptions(args.model), timeoutMs });
+      return saveImagenImages(response, "vertex_upscale_image", args.saveToPath);
     },
   },
 
   // ─── Gemini: Text Generation ────────────────────────────────────
   {
     name: "vertex_generate_content",
-    description: "Generate text content using Gemini models via Vertex AI. Supports text, multimodal (image+text), and structured output. For multimodal input, use filePaths to attach local files (images, PDFs, audio, video) — they are automatically read and converted. If unsure which model to use, call vertex_list_publisher_models first.",
+    description: "Generate text or multimodal content using Gemini models via Vertex AI. Supports text, image generation (Nano Banana), and multimodal input. For input files, use filePaths to attach local files (images, PDFs, audio, video). For image-generating models (e.g. gemini-3-pro-image-preview), output images are auto-saved to disk and file paths returned (set VERTEX_AI_MCP_RETURN_BASE64=true to return raw base64). If unsure which model to use, call vertex_list_publisher_models first.",
     inputSchema: z.object({
       model: z.string().describe("Gemini model name. Call vertex_list_publisher_models to discover available models."),
       prompt: z.string().optional().describe("Simple text prompt. Use this for text-only requests instead of building the full contents array."),
@@ -316,8 +538,10 @@ export const generativeAiTools = [
       topK: z.number().optional().describe("Top-k sampling"),
       responseMimeType: z.string().optional().describe("Response format: text/plain or application/json"),
       stopSequences: z.array(z.string()).optional().describe("Sequences that stop generation"),
+      saveToPath: z.string().optional().describe("Specific path to save generated output images (only applies to image-generation models). Absolute paths used as-is; relative resolved against output dir."),
+      timeout: z.number().optional().describe("Request timeout in seconds. Defaults to a model-aware value (60s text, 300s image gen)."),
     }),
-    handler: async (args: { model: string; prompt?: string; filePaths?: string[]; contents?: Record<string, unknown>[]; systemInstruction?: string; temperature?: number; maxOutputTokens?: number; topP?: number; topK?: number; responseMimeType?: string; stopSequences?: string[] }) => {
+    handler: async (args: { model: string; prompt?: string; filePaths?: string[]; contents?: Record<string, unknown>[]; systemInstruction?: string; temperature?: number; maxOutputTokens?: number; topP?: number; topK?: number; responseMimeType?: string; stopSequences?: string[]; saveToPath?: string; timeout?: number }) => {
       let contents: Record<string, unknown>[];
       if (args.prompt || args.filePaths) {
         const parts: Record<string, unknown>[] = [];
@@ -351,7 +575,9 @@ export const generativeAiTools = [
       if (Object.keys(generationConfig).length > 0) {
         body.generationConfig = generationConfig;
       }
-      return vertexRequest("POST", `/publishers/google/models/${args.model}:generateContent`, body, undefined, modelEndpointOptions(args.model));
+      const timeoutMs = args.timeout ? args.timeout * 1000 : getTimeoutForModel(args.model);
+      const response = await vertexRequest<Record<string, unknown>>("POST", `/publishers/google/models/${args.model}:generateContent`, body, undefined, { ...modelEndpointOptions(args.model), timeoutMs });
+      return saveGeminiImages(response, "vertex_generate_content", args.saveToPath);
     },
   },
   {
@@ -365,8 +591,10 @@ export const generativeAiTools = [
       systemInstruction: z.string().optional().describe("System instruction text"),
       temperature: z.number().optional().describe("Sampling temperature (0.0-2.0)"),
       maxOutputTokens: z.number().optional().describe("Maximum tokens to generate"),
+      saveToPath: z.string().optional().describe("Specific path to save generated output images (only applies to image-generation models)."),
+      timeout: z.number().optional().describe("Request timeout in seconds. Defaults to a model-aware value."),
     }),
-    handler: async (args: { model: string; prompt?: string; filePaths?: string[]; contents?: Record<string, unknown>[]; systemInstruction?: string; temperature?: number; maxOutputTokens?: number }) => {
+    handler: async (args: { model: string; prompt?: string; filePaths?: string[]; contents?: Record<string, unknown>[]; systemInstruction?: string; temperature?: number; maxOutputTokens?: number; saveToPath?: string; timeout?: number }) => {
       let contents: Record<string, unknown>[];
       if (args.prompt || args.filePaths) {
         const parts: Record<string, unknown>[] = [];
@@ -394,7 +622,9 @@ export const generativeAiTools = [
       if (Object.keys(generationConfig).length > 0) {
         body.generationConfig = generationConfig;
       }
-      return vertexRequest("POST", `/publishers/google/models/${args.model}:streamGenerateContent`, body, undefined, modelEndpointOptions(args.model));
+      const timeoutMs = args.timeout ? args.timeout * 1000 : getTimeoutForModel(args.model);
+      const response = await vertexRequest<Record<string, unknown>>("POST", `/publishers/google/models/${args.model}:streamGenerateContent`, body, undefined, { ...modelEndpointOptions(args.model), timeoutMs });
+      return saveGeminiImages(response, "vertex_stream_generate_content", args.saveToPath);
     },
   },
   {
