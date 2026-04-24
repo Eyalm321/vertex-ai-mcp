@@ -190,6 +190,110 @@ describe("Image auto-save and model timeouts", () => {
     expect(parts).toEqual([{ text: "Hello" }]);
   });
 
+  it("vertex_generate_image passes sampleImageSize through for 2K", async () => {
+    const mockFetch = mockAuthAndFetch({
+      predictions: [{ bytesBase64Encoded: PNG_1X1_BASE64, mimeType: "image/png" }],
+    });
+
+    const { generativeAiTools } = await import("../tools/generative-ai.js");
+    const tool = generativeAiTools.find((t) => t.name === "vertex_generate_image");
+
+    const result = await tool!.handler({
+      model: "imagen-4.0-ultra-generate-001",
+      prompt: "a cat",
+      imageSize: "2K",
+    } as never) as Record<string, unknown>;
+
+    const sentBody = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    expect(sentBody.parameters.sampleImageSize).toBe("2K");
+    expect(result.warnings).toBeUndefined();
+  });
+
+  it("vertex_generate_image downgrades 4K to 2K on Imagen with warning", async () => {
+    const mockFetch = mockAuthAndFetch({
+      predictions: [{ bytesBase64Encoded: PNG_1X1_BASE64, mimeType: "image/png" }],
+    });
+
+    const { generativeAiTools } = await import("../tools/generative-ai.js");
+    const tool = generativeAiTools.find((t) => t.name === "vertex_generate_image");
+
+    const result = await tool!.handler({
+      model: "imagen-4.0-ultra-generate-001",
+      prompt: "a cat",
+      imageSize: "4K",
+    } as never) as Record<string, unknown>;
+
+    const sentBody = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    expect(sentBody.parameters.sampleImageSize).toBe("2K");
+    expect(result.warnings).toEqual([expect.stringContaining("4K not supported")]);
+  });
+
+  it("vertex_generate_content passes imageConfig.imageSize for Nano Banana Pro 4K", async () => {
+    const mockFetch = mockAuthAndFetch({
+      candidates: [{ content: { role: "model", parts: [{ text: "ok" }] }, finishReason: "STOP" }],
+    });
+
+    const { generativeAiTools } = await import("../tools/generative-ai.js");
+    const tool = generativeAiTools.find((t) => t.name === "vertex_generate_content");
+
+    const result = await tool!.handler({
+      model: "gemini-3-pro-image-preview",
+      prompt: "generate a 4K image",
+      imageSize: "4K",
+    } as never) as Record<string, unknown>;
+
+    const sentBody = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    expect(sentBody.generationConfig.imageConfig.imageSize).toBe("4K");
+    expect(result.warnings).toBeUndefined();
+  });
+
+  it("vertex_generate_content drops imageSize on Gemini 2.5 Flash Image with warning", async () => {
+    const mockFetch = mockAuthAndFetch({
+      candidates: [{ content: { role: "model", parts: [{ text: "ok" }] }, finishReason: "STOP" }],
+    });
+
+    const { generativeAiTools } = await import("../tools/generative-ai.js");
+    const tool = generativeAiTools.find((t) => t.name === "vertex_generate_content");
+
+    const result = await tool!.handler({
+      model: "gemini-2.5-flash-image",
+      prompt: "generate image",
+      imageSize: "2K",
+    } as never) as Record<string, unknown>;
+
+    const sentBody = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    expect(sentBody.generationConfig?.imageConfig).toBeUndefined();
+    expect(result.warnings).toEqual([expect.stringContaining("2K not supported")]);
+  });
+
+  it("rejects invalid imageSize via zod schema", async () => {
+    const { generativeAiTools } = await import("../tools/generative-ai.js");
+    const tool = generativeAiTools.find((t) => t.name === "vertex_generate_image")!;
+    const parsed = tool.inputSchema.safeParse({
+      model: "imagen-4.0-generate-001",
+      prompt: "a cat",
+      imageSize: "HD",
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  it("omits imageSize fields when not provided", async () => {
+    const mockFetch = mockAuthAndFetch({
+      predictions: [{ bytesBase64Encoded: PNG_1X1_BASE64, mimeType: "image/png" }],
+    });
+
+    const { generativeAiTools } = await import("../tools/generative-ai.js");
+    const tool = generativeAiTools.find((t) => t.name === "vertex_generate_image");
+
+    await tool!.handler({
+      model: "imagen-4.0-generate-001",
+      prompt: "a cat",
+    } as never);
+
+    const sentBody = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    expect(sentBody.parameters.sampleImageSize).toBeUndefined();
+  });
+
   it("passes extended timeout for Nano Banana Pro", async () => {
     const mockFetch = mockAuthAndFetch({
       candidates: [

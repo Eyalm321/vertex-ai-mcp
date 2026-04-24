@@ -131,6 +131,25 @@ Pass `saveToPath` to control the exact output location:
 
 Set `VERTEX_AI_MCP_RETURN_BASE64=true` for legacy behavior (inline base64).
 
+## Image Resolution (`imageSize`)
+
+`vertex_generate_image` and `vertex_generate_content` accept an optional `imageSize` parameter: `"1K"`, `"2K"`, or `"4K"`. Omit for the model's default.
+
+| Model | 1K | 2K | 4K | Parameter sent |
+|---|---|---|---|---|
+| `gemini-3-pro-image-preview` (Nano Banana Pro) | ✅ | ✅ | ✅ | `generationConfig.imageConfig.imageSize` |
+| `gemini-3.1-flash-image-preview` (Nano Banana 2) | ✅ | ✅ | ✅ | `generationConfig.imageConfig.imageSize` |
+| `gemini-2.5-flash-image` (original Nano Banana) | ✅ | ❌ | ❌ | (1K native only — field dropped) |
+| `imagen-4.0-generate-001` | ✅ | ✅ | ❌ | `parameters.sampleImageSize` |
+| `imagen-4.0-fast-generate-001` | ✅ | ✅ | ❌ | `parameters.sampleImageSize` |
+| `imagen-4.0-ultra-generate-001` | ✅ | ✅ | ❌ | `parameters.sampleImageSize` |
+
+**Fallback behavior** — unsupported sizes are silently downgraded with a `warnings` field in the response:
+- Imagen 4 + `4K` → downgrades to `2K`
+- `gemini-2.5-flash-image` + `2K`/`4K` → field dropped, generates at native 1K
+
+**Known upstream bug**: `gemini-3.1-flash-image-preview` sometimes silently ignores `imageSize` and returns 1K regardless ([js-genai#1461](https://github.com/googleapis/js-genai/issues/1461)). This is on Google's side.
+
 ## Model-Aware Timeouts
 
 Image generation (especially Nano Banana Pro on `gemini-3-pro-image-preview`) can take 1-3 minutes. The MCP server picks a timeout based on the model name:
@@ -145,7 +164,7 @@ Image generation (especially Nano Banana Pro on `gemini-3-pro-image-preview`) ca
 | `imagen-*` | 120s |
 | all other Gemini models | 60s |
 
-Override per-call with the `timeout` parameter (seconds).
+Override per-call with the `timeout` parameter (seconds). Higher resolutions extend the timeout: **+60s for 2K, +180s for 4K.**
 
 ## Tools (197)
 

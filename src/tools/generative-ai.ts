@@ -86,17 +86,61 @@ function modelEndpointOptions(model: string): { globalLocation?: boolean } | und
 }
 
 // ─── Model-aware timeouts ─────────────────────────────────────────
-/** Pick a timeout (ms) based on model name. Image generation models need longer. */
-function getTimeoutForModel(model: string): number {
-  if (model.startsWith("veo-")) return 600_000; // 10 min
-  if (/gemini-3.*image/i.test(model)) return 300_000; // Nano Banana Pro: 5 min
-  if (/gemini-.*flash-image/i.test(model)) return 180_000; // Nano Banana Flash: 3 min
-  if (/gemini.*image/i.test(model)) return 300_000; // Other Gemini image: 5 min
-  if (model.startsWith("imagen-")) {
-    if (model.includes("ultra")) return 180_000; // Imagen Ultra: 3 min
-    return 120_000; // Imagen: 2 min
+/** Pick a timeout (ms) based on model name and requested image size. */
+function getTimeoutForModel(model: string, imageSize?: string): number {
+  let base: number;
+  if (model.startsWith("veo-")) base = 600_000; // 10 min
+  else if (/gemini-3.*image/i.test(model)) base = 300_000; // Nano Banana Pro: 5 min
+  else if (/gemini-.*flash-image/i.test(model)) base = 180_000; // Nano Banana Flash: 3 min
+  else if (/gemini.*image/i.test(model)) base = 300_000; // Other Gemini image: 5 min
+  else if (model.startsWith("imagen-")) {
+    base = model.includes("ultra") ? 180_000 : 120_000; // Ultra: 3 min, others: 2 min
+  } else {
+    base = 60_000; // default text generation
   }
-  return 60_000; // default text generation
+  // Higher resolutions take longer
+  if (imageSize === "2K") base += 60_000;
+  if (imageSize === "4K") base += 180_000; // +60 (2K) + 120 (4K over 2K)
+  return base;
+}
+
+/**
+ * Determine what to do with a requested imageSize for a Gemini model.
+ * Returns the size to actually send (or null to drop the field) + optional warning.
+ */
+function resolveGeminiImageSize(model: string, requested?: "1K" | "2K" | "4K"): {
+  imageSize: "1K" | "2K" | "4K" | null;
+  warning?: string;
+} {
+  if (!requested) return { imageSize: null };
+  // gemini-2.5-flash-image (original Nano Banana): no imageConfig.imageSize support, 1K only
+  if (/gemini-2\.5-flash-image/i.test(model)) {
+    if (requested === "1K") return { imageSize: null }; // 1K is native, don't send the field
+    return {
+      imageSize: null,
+      warning: `Requested ${requested} not supported on ${model} (1K only); generated at native 1K.`,
+    };
+  }
+  // gemini-3-pro-image-preview, gemini-3.1-flash-image-preview: full 1K/2K/4K support
+  return { imageSize: requested };
+}
+
+/**
+ * Determine what to do with a requested imageSize for an Imagen model.
+ * Imagen 4 family (Standard/Fast/Ultra) caps at 2K — no 4K support.
+ */
+function resolveImagenImageSize(model: string, requested?: "1K" | "2K" | "4K"): {
+  imageSize: "1K" | "2K" | null;
+  warning?: string;
+} {
+  if (!requested) return { imageSize: null };
+  if (requested === "4K") {
+    return {
+      imageSize: "2K",
+      warning: `Requested 4K not supported on ${model} (Imagen 4 caps at 2K); downgraded to 2K.`,
+    };
+  }
+  return { imageSize: requested };
 }
 
 // ─── Image output: MIME → extension ───────────────────────────────
@@ -347,10 +391,11 @@ export const generativeAiTools = [
       seed: z.number().optional().describe("Seed for deterministic output (requires addWatermark: false)"),
       safetySetting: z.string().optional().describe("Safety filter: block_low_and_above, block_medium_and_above, block_only_high, block_none"),
       personGeneration: z.string().optional().describe("People generation: allow_all, allow_adult, dont_allow"),
+      imageSize: z.enum(["1K", "2K", "4K"]).optional().describe("Output image resolution. 1K ~1024px long side (default). 2K ~2048px (Imagen 4). 4K ~4096px (Imagen 4 Ultra only). Omit for the model's default."),
       saveToPath: z.string().optional().describe("Specific path to save the image. Absolute paths used as-is; relative paths resolved against the output dir. If a directory, auto-filename is appended."),
-      timeout: z.number().optional().describe("Request timeout in seconds. Defaults to a model-aware value (120s for Imagen, 180s for Ultra)."),
+      timeout: z.number().optional().describe("Request timeout in seconds. Defaults to a model-aware value (120s for Imagen, 180s for Ultra; +60s for 2K, +180s for 4K)."),
     }),
-    handler: async (args: { model: string; prompt: string; sampleCount?: number; aspectRatio?: string; addWatermark?: boolean; enhancePrompt?: boolean; seed?: number; safetySetting?: string; personGeneration?: string; saveToPath?: string; timeout?: number }) => {
+    handler: async (args: { model: string; prompt: string; sampleCount?: number; aspectRatio?: string; addWatermark?: boolean; enhancePrompt?: boolean; seed?: number; safetySetting?: string; personGeneration?: string; imageSize?: "1K" | "2K" | "4K"; saveToPath?: string; timeout?: number }) => {
       const parameters: Record<string, unknown> = {};
       if (args.sampleCount !== undefined) parameters.sampleCount = args.sampleCount;
       if (args.aspectRatio !== undefined) parameters.aspectRatio = args.aspectRatio;
@@ -359,12 +404,18 @@ export const generativeAiTools = [
       if (args.seed !== undefined) parameters.seed = args.seed;
       if (args.safetySetting !== undefined) parameters.safetySetting = args.safetySetting;
       if (args.personGeneration !== undefined) parameters.personGeneration = args.personGeneration;
-      const timeoutMs = args.timeout ? args.timeout * 1000 : getTimeoutForModel(args.model);
+      const warnings: string[] = [];
+      const sizeResolved = resolveImagenImageSize(args.model, args.imageSize);
+      if (sizeResolved.imageSize) parameters.sampleImageSize = sizeResolved.imageSize;
+      if (sizeResolved.warning) warnings.push(sizeResolved.warning);
+      const effectiveSize = sizeResolved.imageSize ?? undefined;
+      const timeoutMs = args.timeout ? args.timeout * 1000 : getTimeoutForModel(args.model, effectiveSize);
       const response = await vertexRequest<Record<string, unknown>>("POST", `/publishers/google/models/${args.model}:predict`, {
         instances: [{ prompt: args.prompt }],
         parameters,
       }, undefined, { ...modelEndpointOptions(args.model), timeoutMs });
-      return saveImagenImages(response, "vertex_generate_image", args.saveToPath);
+      const saved = await saveImagenImages(response, "vertex_generate_image", args.saveToPath);
+      return warnings.length > 0 ? { ...saved, warnings } : saved;
     },
   },
   {
@@ -538,10 +589,11 @@ export const generativeAiTools = [
       topK: z.number().optional().describe("Top-k sampling"),
       responseMimeType: z.string().optional().describe("Response format: text/plain or application/json"),
       stopSequences: z.array(z.string()).optional().describe("Sequences that stop generation"),
+      imageSize: z.enum(["1K", "2K", "4K"]).optional().describe("Output image resolution for image-generation models. gemini-3-pro-image-preview (Nano Banana Pro) and gemini-3.1-flash-image-preview (Nano Banana 2) support 1K/2K/4K natively. gemini-2.5-flash-image (original Nano Banana) only supports 1K — 2K/4K requests will warn and fall back. Omit for the model's default."),
       saveToPath: z.string().optional().describe("Specific path to save generated output images (only applies to image-generation models). Absolute paths used as-is; relative resolved against output dir."),
-      timeout: z.number().optional().describe("Request timeout in seconds. Defaults to a model-aware value (60s text, 300s image gen)."),
+      timeout: z.number().optional().describe("Request timeout in seconds. Defaults to a model-aware value (60s text, 300s image gen; +60s for 2K)."),
     }),
-    handler: async (args: { model: string; prompt?: string; filePaths?: string[]; contents?: Record<string, unknown>[]; systemInstruction?: string; temperature?: number; maxOutputTokens?: number; topP?: number; topK?: number; responseMimeType?: string; stopSequences?: string[]; saveToPath?: string; timeout?: number }) => {
+    handler: async (args: { model: string; prompt?: string; filePaths?: string[]; contents?: Record<string, unknown>[]; systemInstruction?: string; temperature?: number; maxOutputTokens?: number; topP?: number; topK?: number; responseMimeType?: string; stopSequences?: string[]; imageSize?: "1K" | "2K" | "4K"; saveToPath?: string; timeout?: number }) => {
       let contents: Record<string, unknown>[];
       if (args.prompt || args.filePaths) {
         const parts: Record<string, unknown>[] = [];
@@ -572,12 +624,20 @@ export const generativeAiTools = [
       if (args.topK !== undefined) generationConfig.topK = args.topK;
       if (args.responseMimeType !== undefined) generationConfig.responseMimeType = args.responseMimeType;
       if (args.stopSequences !== undefined) generationConfig.stopSequences = args.stopSequences;
+      const warnings: string[] = [];
+      const sizeResolved = resolveGeminiImageSize(args.model, args.imageSize);
+      if (sizeResolved.imageSize) {
+        generationConfig.imageConfig = { imageSize: sizeResolved.imageSize };
+      }
+      if (sizeResolved.warning) warnings.push(sizeResolved.warning);
       if (Object.keys(generationConfig).length > 0) {
         body.generationConfig = generationConfig;
       }
-      const timeoutMs = args.timeout ? args.timeout * 1000 : getTimeoutForModel(args.model);
+      const effectiveSize = sizeResolved.imageSize ?? undefined;
+      const timeoutMs = args.timeout ? args.timeout * 1000 : getTimeoutForModel(args.model, effectiveSize);
       const response = await vertexRequest<Record<string, unknown>>("POST", `/publishers/google/models/${args.model}:generateContent`, body, undefined, { ...modelEndpointOptions(args.model), timeoutMs });
-      return saveGeminiImages(response, "vertex_generate_content", args.saveToPath);
+      const saved = await saveGeminiImages(response, "vertex_generate_content", args.saveToPath);
+      return warnings.length > 0 ? { ...saved, warnings } : saved;
     },
   },
   {
