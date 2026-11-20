@@ -26,11 +26,11 @@ describe("Vertex AI Client", () => {
 
     // Mock google-auth-library
     vi.doMock("google-auth-library", () => ({
-      GoogleAuth: vi.fn().mockImplementation(() => ({
+      GoogleAuth: vi.fn().mockImplementation(function () { return {
         getClient: vi.fn().mockResolvedValue({
           getAccessToken: vi.fn().mockResolvedValue({ token: "mock-token" }),
         }),
-      })),
+      }; }),
     }));
 
     // Mock fetch
@@ -60,11 +60,11 @@ describe("Vertex AI Client", () => {
     process.env.GOOGLE_LOCATION = "europe-west1";
 
     vi.doMock("google-auth-library", () => ({
-      GoogleAuth: vi.fn().mockImplementation(() => ({
+      GoogleAuth: vi.fn().mockImplementation(function () { return {
         getClient: vi.fn().mockResolvedValue({
           getAccessToken: vi.fn().mockResolvedValue({ token: "mock-token" }),
         }),
-      })),
+      }; }),
     }));
 
     const mockFetch = vi.fn().mockResolvedValue({
@@ -88,11 +88,11 @@ describe("Vertex AI Client", () => {
     process.env.GOOGLE_PROJECT_ID = "test-project";
 
     vi.doMock("google-auth-library", () => ({
-      GoogleAuth: vi.fn().mockImplementation(() => ({
+      GoogleAuth: vi.fn().mockImplementation(function () { return {
         getClient: vi.fn().mockResolvedValue({
           getAccessToken: vi.fn().mockResolvedValue({ token: "mock-token" }),
         }),
-      })),
+      }; }),
     }));
 
     const mockFetch = vi.fn().mockResolvedValue({
@@ -120,11 +120,11 @@ describe("Vertex AI Client", () => {
     process.env.GOOGLE_PROJECT_ID = "test-project";
 
     vi.doMock("google-auth-library", () => ({
-      GoogleAuth: vi.fn().mockImplementation(() => ({
+      GoogleAuth: vi.fn().mockImplementation(function () { return {
         getClient: vi.fn().mockResolvedValue({
           getAccessToken: vi.fn().mockResolvedValue({ token: "mock-token" }),
         }),
-      })),
+      }; }),
     }));
 
     const mockFetch = vi.fn().mockResolvedValue({
@@ -146,11 +146,11 @@ describe("Vertex AI Client", () => {
     process.env.GOOGLE_PROJECT_ID = "test-project";
 
     vi.doMock("google-auth-library", () => ({
-      GoogleAuth: vi.fn().mockImplementation(() => ({
+      GoogleAuth: vi.fn().mockImplementation(function () { return {
         getClient: vi.fn().mockResolvedValue({
           getAccessToken: vi.fn().mockResolvedValue({ token: "mock-token" }),
         }),
-      })),
+      }; }),
     }));
 
     const mockFetch = vi.fn().mockResolvedValue({

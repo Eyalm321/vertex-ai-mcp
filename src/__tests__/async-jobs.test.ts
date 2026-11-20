@@ -22,11 +22,11 @@ describe("Async generation jobs", () => {
 
   function mockAuthAndFetch(response: unknown, delayMs = 0) {
     vi.doMock("google-auth-library", () => ({
-      GoogleAuth: vi.fn().mockImplementation(() => ({
+      GoogleAuth: vi.fn().mockImplementation(function () { return {
         getClient: vi.fn().mockResolvedValue({
           getAccessToken: vi.fn().mockResolvedValue({ token: "mock-token" }),
         }),
-      })),
+      }; }),
     }));
     const mockFetch = vi.fn().mockImplementation(
       () =>
@@ -98,11 +98,11 @@ describe("Async generation jobs", () => {
 
   it("vertex_get_job returns failed when generation errors", async () => {
     vi.doMock("google-auth-library", () => ({
-      GoogleAuth: vi.fn().mockImplementation(() => ({
+      GoogleAuth: vi.fn().mockImplementation(function () { return {
         getClient: vi.fn().mockResolvedValue({
           getAccessToken: vi.fn().mockResolvedValue({ token: "mock-token" }),
         }),
-      })),
+      }; }),
     }));
     vi.stubGlobal(
       "fetch",

@@ -26,11 +26,11 @@ describe("Retry + concurrency smoothing", () => {
 
   function mockAuthOnly() {
     vi.doMock("google-auth-library", () => ({
-      GoogleAuth: vi.fn().mockImplementation(() => ({
+      GoogleAuth: vi.fn().mockImplementation(function () { return {
         getClient: vi.fn().mockResolvedValue({
           getAccessToken: vi.fn().mockResolvedValue({ token: "mock-token" }),
         }),
-      })),
+      }; }),
     }));
   }
 
