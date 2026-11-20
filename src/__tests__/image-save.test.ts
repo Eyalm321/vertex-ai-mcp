@@ -29,11 +29,11 @@ describe("Image auto-save and model timeouts", () => {
 
   function mockAuthAndFetch(response: unknown) {
     vi.doMock("google-auth-library", () => ({
-      GoogleAuth: vi.fn().mockImplementation(() => ({
+      GoogleAuth: vi.fn().mockImplementation(function () { return {
         getClient: vi.fn().mockResolvedValue({
           getAccessToken: vi.fn().mockResolvedValue({ token: "mock-token" }),
         }),
-      })),
+      }; }),
     }));
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
